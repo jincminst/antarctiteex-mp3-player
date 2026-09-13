@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antarctiteex-mp3-player"
+version = "0.1.40"
+description = "A terminal MP3 player with playlists, library statistics, YouTube tools, and Apple Music radio"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pygame>=2.5",
+    "pynput>=1.7",
+    "Send2Trash>=1.8",
+    "textual>=0.50",
+    "yt-dlp",
+]
+
+[project.scripts]
+antarctiteex = "play:main"
+mp3-player = "play:main"
+
+[tool.setuptools]
+py-modules = ["play"]

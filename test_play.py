@@ -1,0 +1,1079 @@
+import ast
+import inspect
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import play
+
+
+class FakeListWindow:
+    def __init__(self, height):
+        self.height = height
+
+    def getmaxyx(self):
+        return self.height, 80
+
+
+class FakeScreen:
+    def __init__(self, height=30, width=100):
+        self.height = height
+        self.width = width
+        self.subwins = []
+
+    def getmaxyx(self):
+        return self.height, self.width
+
+    def subwin(self, height, width, y, x):
+        window = mock.Mock()
+        window.geometry = (height, width, y, x)
+        self.subwins.append(window)
+        return window
+
+
+def bare_player(*, visible=4):
+    player = play.Player.__new__(play.Player)
+    player.win_lst = FakeListWindow(visible + 3)
+    player.apple_radio_enabled = False
+    player.youtube_preview_enabled = False
+    player.youtube_results = []
+    player.songs = []
+    player.scroll = 0
+    player.dirty = False
+    player._needs_redraw_lst = False
+    return player
+
+
+class FunctionInventoryTests(unittest.TestCase):
+    def test_help_continuation_lines_align_with_descriptions(self):
+        width = 38
+        lines = play.HelpScreen._wrapped_help_text(width).splitlines()
+        continuation_lines = [line for line in lines if line.startswith(" " * 18)]
+
+        self.assertTrue(continuation_lines)
+        self.assertTrue(all(len(line) <= width for line in lines))
+        self.assertTrue(
+            all(len(line) == 18 or line[18] != " " for line in continuation_lines)
+        )
+
+
+    def test_playlist_tab_has_visible_dividers(self):
+        player = play.Player.__new__(play.Player)
+        player._safe = mock.Mock()
+
+        width = player._merged_tab(mock.Mock(), 0, 4, "Favorites", first=True)
+
+        self.assertEqual(width, len(" Favorites ") + 2)
+        self.assertTrue(player._safe.call_args_list[0].args[3].startswith("┌"))
+        self.assertEqual(player._safe.call_args_list[-1].args[3], "│")
+
+    def test_header_button_is_square_and_not_underlined(self):
+        player = play.Player.__new__(play.Player)
+        player._safe = mock.Mock()
+
+        width = player._outline_btn(mock.Mock(), 2, 10, "PLAY")
+
+        self.assertEqual(width, len(" PLAY ") + 2)
+        self.assertTrue(player._safe.call_args_list[0].args[3].startswith("┌"))
+        self.assertTrue(player._safe.call_args_list[-1].args[3].startswith("└"))
+
+    def test_every_function_compiles_and_player_methods_are_callable(self):
+        source = Path(play.__file__).read_text()
+        tree = ast.parse(source, play.__file__)
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        self.assertGreater(len(functions), 190)
+        compile(tree, play.__file__, "exec")
+        for name, member in inspect.getmembers(play.Player):
+            if name.startswith("__") and name not in {"__init__"}:
+                continue
+            if inspect.isfunction(member) or isinstance(member, staticmethod):
+                self.assertTrue(callable(member), name)
+
+    def test_playlist_tabs_sit_directly_on_library_panel(self):
+        player = play.Player.__new__(play.Player)
+        player.stdscr = FakeScreen()
+        player.apple_radio_enabled = False
+        player.youtube_preview_enabled = False
+        player.rename_active = False
+
+        player._layout()
+
+        tab_geometry = player.stdscr.subwins[2].geometry
+        list_geometry = player.stdscr.subwins[3].geometry
+        self.assertEqual(tab_geometry[2], list_geometry[2])
+        self.assertEqual(tab_geometry[3] + tab_geometry[1] - 1, list_geometry[3])
+
+    def test_playlist_rename_row_stays_attached_above_library(self):
+        player = play.Player.__new__(play.Player)
+        player.stdscr = FakeScreen()
+        player.apple_radio_enabled = False
+        player.youtube_preview_enabled = False
+        player.rename_active = True
+
+        player._layout()
+
+        tab_geometry = player.stdscr.subwins[2].geometry
+        list_geometry = player.stdscr.subwins[3].geometry
+        self.assertEqual(tab_geometry[2], list_geometry[2])
+        self.assertEqual(tab_geometry[3] + tab_geometry[1] - 1, list_geometry[3])
+
+    def test_short_terminal_uses_compact_layout(self):
+        player = play.Player.__new__(play.Player)
+        player.stdscr = FakeScreen(height=20)
+        player.apple_radio_enabled = False
+        player.youtube_preview_enabled = False
+        player.rename_active = False
+
+        player._layout()
+
+        self.assertEqual(player.stdscr.subwins[0].geometry[0], 7)
+        self.assertEqual(player.stdscr.subwins[2].geometry[0], 8)
+
+
+class InitializationIntegrationTests(unittest.TestCase):
+    def test_canceling_radio_restores_local_song_and_position(self):
+        with tempfile.TemporaryDirectory() as folder:
+            player = play.Player(folder=folder)
+            player.current = "song.mp3"
+            player._all_songs_set = {"song.mp3"}
+            player.all_songs = ["song.mp3"]
+            player.playlists = {"Mix": ["song.mp3"]}
+            player.playlist_tags = {}
+            player.tab_names = ["All", "Mix"]
+            player.active_tab = 1
+            player.play_tab = "Mix"
+            player.paused = False
+            station = {"name": "Apple Music 1", "url": ""}
+
+            with (
+                mock.patch.object(
+                    player, "_current_pos_in_song", return_value=(4321, 9000)
+                ),
+                mock.patch.object(player, "_stop_apple_radio_audio"),
+                mock.patch.object(player, "_rebuild"),
+                mock.patch.object(player, "_layout"),
+                mock.patch.object(player, "_update_timeout"),
+                mock.patch.object(player, "_cached_duration_ms", return_value=9000),
+                mock.patch.object(player, "_restart_current_audio") as restart,
+                mock.patch.object(play.pygame, "mixer"),
+            ):
+                player._play_apple_radio_station(station)
+                self.assertEqual(player._pre_radio_song, "song.mp3")
+                self.assertEqual(player._pre_radio_pos_ms, 4321)
+                player._exit_apple_radio_mode()
+
+            self.assertEqual(player.current, "song.mp3")
+            self.assertEqual(player.play_tab, "Mix")
+            self.assertEqual(player.play_pool, ["song.mp3"])
+            self.assertFalse(player.apple_radio_enabled)
+            restart.assert_called_once_with(
+                target_ms=4321, suppress_completion=True
+            )
+
+    def test_shared_shutdown_stops_external_apple_radio(self):
+        with tempfile.TemporaryDirectory() as folder:
+            player = play.Player(folder=folder)
+            player.apple_radio_enabled = True
+            player.apple_radio_active = "Apple Music 1"
+            with (
+                mock.patch.object(player, "_save_session_if_due"),
+                mock.patch.object(player, "_stop_apple_radio_audio") as stop_radio,
+                mock.patch.object(play.pygame, "mixer"),
+            ):
+                player._shutdown_audio()
+                player._shutdown_audio()
+
+            stop_radio.assert_called_once_with()
+            self.assertFalse(player.apple_radio_enabled)
+            self.assertEqual(player.apple_radio_active, "")
+
+    def test_session_snapshot_records_local_playback_state(self):
+        player = bare_player()
+        player._cache = {"settings": {}}
+        player.vol = 0.7
+        player.play_mode = "shuffle"
+        player.tab_names = ["All", "Mix"]
+        player.active_tab = 1
+        player._all_songs_set = {"song"}
+        player.current = "song"
+        player._play_start = 1
+        with mock.patch.object(player, "_current_pos_in_song", return_value=(4321, 9000)):
+            session = player._session_snapshot()
+
+        self.assertEqual(
+            session,
+            {
+                "volume": 0.7,
+                "play_mode": "shuffle",
+                "playlist": "Mix",
+                "song": "song",
+                "position_ms": 4321,
+            },
+        )
+
+    def test_saved_session_restores_song_at_position_paused(self):
+        player = bare_player()
+        player._saved_session = {"song": "song", "position_ms": 4321}
+        player._all_songs_set = {"song"}
+        player.folder = "/music"
+        player.current = "None"
+        player.paused = False
+        player._song_len_ms = 0
+        player._current_playback_path = ""
+        player._pause_offset = 0
+        player._last_session_snapshot = None
+        player._cache = {"settings": {}}
+        player.vol = 0.4
+        player.play_mode = "loop"
+        player.tab_names = ["All"]
+        player.active_tab = 0
+        player._current_volume_multiplier = 1.0
+        player._last_volume_apply_at = 0
+        player._youtube_temp_path = None
+        music = mock.Mock()
+        mixer = mock.Mock()
+        mixer.music = music
+        with (
+            mock.patch.object(play.pygame, "mixer", mixer),
+            mock.patch.object(player, "_cached_duration_ms", return_value=9000),
+            mock.patch.object(player, "_cached_volume_multiplier", return_value=0.8),
+            mock.patch.object(player, "_apply_volume"),
+        ):
+            restored = player._restore_saved_session()
+
+        self.assertTrue(restored)
+        self.assertEqual(player.current, "song")
+        self.assertTrue(player.paused)
+        music.play.assert_called_once_with(loops=0, start=4.321)
+        music.pause.assert_called_once_with()
+
+    def test_refresh_library_reports_external_additions_and_removals(self):
+        player = bare_player()
+        player.all_songs = ["old", "kept"]
+        player._all_songs_set = {"old", "kept"}
+        player.current = "None"
+        player._last_session_save_at = 0
+        notifications = []
+
+        def rebuild():
+            player.all_songs = ["kept", "new"]
+            player._all_songs_set = {"kept", "new"}
+
+        with (
+            mock.patch.object(player, "_rebuild", side_effect=rebuild),
+            mock.patch.object(player, "_rebuild_play_pool"),
+            mock.patch.object(player, "_emit_notification", side_effect=notifications.append),
+            mock.patch.object(player, "_mark_all_dirty"),
+            mock.patch.object(player, "_save_session_if_due"),
+        ):
+            changes = player._refresh_library()
+
+        self.assertEqual(changes, (1, 1))
+        self.assertEqual(player.status_msg, "Library refreshed: 1 added, 1 removed")
+        self.assertEqual(notifications, [player.status_msg])
+
+    def test_delete_moves_mp3_to_trash_and_updates_library_state(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            path = Path(folder, "song.mp3")
+            path.touch()
+            player.delete_confirm_songs = ["song"]
+            player.current = "None"
+            player._song_len_ms = 0
+            player.paused = False
+            player.playlists = {"Mix": ["song"]}
+            player.selected_songs = {"song"}
+            player.focused = "search"
+            player._needs_redraw_hdr = False
+            player._needs_redraw_bar = False
+            player._needs_redraw_inp = False
+            trashed = []
+
+            def fake_trash(file_path):
+                trashed.append(file_path)
+                Path(file_path).unlink()
+
+            with (
+                mock.patch.object(player, "_move_to_trash", side_effect=fake_trash),
+                mock.patch.object(player, "_save_playlists"),
+                mock.patch.object(player, "_rebuild"),
+                mock.patch.object(player, "_rebuild_play_pool"),
+            ):
+                player._confirm_delete_mp3()
+
+            self.assertEqual(trashed, [str(path)])
+            self.assertFalse(path.exists())
+            self.assertEqual(player.playlists["Mix"], [])
+            self.assertEqual(player.status_msg, "Moved 1 MP3 to Trash")
+
+    def test_failed_trash_move_does_not_remove_playlist_entry(self):
+        player = bare_player()
+        player.folder = "/tmp"
+        player.delete_confirm_songs = ["song"]
+        player.current = "song"
+        player._song_len_ms = 1000
+        player.paused = False
+        player.playlists = {"Mix": ["song"]}
+        player.selected_songs = {"song"}
+        player.focused = "search"
+        player._needs_redraw_hdr = False
+        player._needs_redraw_bar = False
+        player._needs_redraw_inp = False
+        with (
+            mock.patch.object(player, "_move_to_trash", side_effect=OSError("no")),
+            mock.patch.object(player, "_save_playlists"),
+            mock.patch.object(player, "_rebuild"),
+            mock.patch.object(player, "_rebuild_play_pool"),
+        ):
+            player._confirm_delete_mp3()
+        self.assertEqual(player.playlists["Mix"], ["song"])
+        self.assertEqual(player.current, "song")
+        self.assertEqual(player.status_msg, "Moved 0 to Trash, failed 1")
+
+    def test_constructor_scans_library_and_tolerates_legacy_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "Zulu.MP3").touch()
+            Path(folder, "alpha.mp3").touch()
+            Path(folder, "ignore.txt").touch()
+            Path(folder, play.META_FILE).write_text(
+                json.dumps({"alpha": {"plays": "3"}})
+            )
+
+            def fake_layout(player):
+                player.win_lst = FakeListWindow(8)
+                player._mark_all_dirty()
+
+            fake_mixer = mock.Mock()
+            with (
+                mock.patch.object(play.pygame, "mixer", fake_mixer),
+                mock.patch.object(play.Player, "_setup_curses"),
+                mock.patch.object(play.Player, "_layout", fake_layout),
+                mock.patch.object(play.Player, "_start_media_key_listener"),
+                mock.patch.object(play.Player, "_start_screen_lock_watcher"),
+                mock.patch.object(play.Player, "_start_duration_loader"),
+                mock.patch.object(play.threading, "Thread") as thread,
+            ):
+                player = play.Player(mock.Mock(), folder)
+
+            self.assertEqual(player.all_songs, ["alpha", "Zulu"])
+            self.assertEqual(player.songs, ["alpha", "Zulu"])
+            self.assertEqual(player._plays("alpha"), 3)
+            thread.assert_called_once()
+
+    def test_mp3_rename_persists_renamed_metadata(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, "old.mp3").touch()
+            player.mp3_rename_old = "old"
+            player.mp3_rename_buf = "new"
+            player.mp3_rename_cursor = 3
+            player.focused = "search"
+            player.meta = {"old": {"plays": 7}}
+            player.playlists = {}
+            player._plays_cache = {"old": 7}
+            player._duration_ms_cache = {}
+            player._total_listen_hours_cache = {}
+            player.current = "None"
+            player.selected_songs = set()
+            player._selection_anchor = None
+            player._needs_redraw_hdr = False
+            player._needs_redraw_bar = False
+            player._needs_redraw_inp = False
+            with (
+                mock.patch.object(player, "_save_playlists"),
+                mock.patch.object(player, "_rebuild"),
+                mock.patch.object(player, "_rebuild_play_pool") as rebuild_pool,
+            ):
+                player._finish_mp3_rename()
+
+            saved = json.loads(Path(folder, play.META_FILE).read_text())
+            self.assertEqual(saved["songs"], {"new": {"plays": 7}})
+            self.assertEqual(saved["playlists"], {})
+            self.assertEqual(saved["analysis"], {})
+            self.assertTrue(Path(folder, "new.mp3").exists())
+            rebuild_pool.assert_called_once_with()
+
+
+class ScrollingTests(unittest.TestCase):
+    def test_scrollbar_thumb_can_be_dragged_to_bottom(self):
+        player = bare_player(visible=10)
+        player.songs = list(range(100))
+        player.win_lst = mock.Mock()
+        player.win_lst.getbegyx.return_value = (9, 20)
+        player.win_lst.getmaxyx.return_value = (13, 80)
+        player._scroll_dragging = False
+        player._scroll_drag_offset = 0
+
+        geometry = player._scrollbar_geometry()
+        column, track_y, visible, _, _, maximum = geometry
+        # The protected gutter is wider than the one-character track.
+        self.assertTrue(player._start_scrollbar_drag(track_y, column - 1))
+        self.assertTrue(player._scroll_dragging)
+        player._drag_scrollbar_to(track_y + visible - 1)
+
+        self.assertEqual(player.scroll, maximum)
+        self.assertTrue(player._needs_redraw_lst)
+
+    def test_clicking_scrollbar_track_jumps_without_playing_a_song(self):
+        player = bare_player(visible=10)
+        player.songs = list(range(100))
+        player.win_lst = mock.Mock()
+        player.win_lst.getbegyx.return_value = (5, 7)
+        player.win_lst.getmaxyx.return_value = (13, 50)
+        player._scroll_dragging = False
+        player._scroll_drag_offset = 0
+
+        column, track_y, visible, _, _, _ = player._scrollbar_geometry()
+        handled = player._start_scrollbar_drag(
+            track_y + visible // 2, column + 1
+        )
+
+        self.assertTrue(handled)
+        self.assertGreater(player.scroll, 0)
+
+    def test_scrollbar_gutter_is_exactly_three_columns_wide(self):
+        player = bare_player(visible=10)
+        player.win_lst = mock.Mock()
+        player.win_lst.getbegyx.return_value = (5, 7)
+        player.win_lst.getmaxyx.return_value = (13, 50)
+
+        right_border = 7 + 50 - 1
+        self.assertFalse(player._in_scrollbar_gutter(8, right_border - 4))
+        self.assertTrue(player._in_scrollbar_gutter(8, right_border - 3))
+        self.assertTrue(player._in_scrollbar_gutter(8, right_border - 2))
+        self.assertTrue(player._in_scrollbar_gutter(8, right_border - 1))
+
+    def test_context_menu_scroll_down_requests_a_redraw(self):
+        player = bare_player()
+        player.stdscr = FakeListWindow(8)
+        player.ctx_menu_items = [("item", None, str(i)) for i in range(10)]
+        player.ctx_menu_sel = 0
+        player.ctx_menu_scroll = 0
+        player._needs_redraw_ctx = False
+        player._ctx_scroll_down()
+        self.assertTrue(player.dirty)
+        self.assertTrue(player._needs_redraw_ctx)
+
+    def test_context_menu_navigation_skips_separators(self):
+        player = bare_player()
+        player.stdscr = FakeListWindow(12)
+        player.ctx_menu_items = [
+            ("item", None, "one"),
+            ("separator", None, ""),
+            ("item", None, "two"),
+        ]
+        player.ctx_menu_sel = 0
+        player.ctx_menu_scroll = 0
+        player._needs_redraw_ctx = False
+        player._ctx_scroll_down()
+        self.assertEqual(player.ctx_menu_sel, 2)
+        player._ctx_scroll_up()
+        self.assertEqual(player.ctx_menu_sel, 0)
+
+    def test_scroll_boundaries_for_library_youtube_and_radio(self):
+        player = bare_player(visible=4)
+        player.songs = list(range(10))
+        self.assertEqual(player._max_scroll(), 6)
+        player._scroll_down(99)
+        self.assertEqual(player.scroll, 6)
+        player._scroll_up(99)
+        self.assertEqual(player.scroll, 0)
+
+        player.youtube_preview_enabled = True
+        player.youtube_results = list(range(8))
+        self.assertEqual(player._max_scroll(), 4)
+
+        player.youtube_preview_enabled = False
+        player.apple_radio_enabled = True
+        self.assertEqual(player._max_scroll(), 0)
+
+    def test_negative_scroll_amount_cannot_move_or_escape_bounds(self):
+        player = bare_player(visible=3)
+        player.songs = list(range(10))
+        player.scroll = 4
+        player._scroll_up(-5)
+        self.assertEqual(player.scroll, 4)
+        player._scroll_down(-5)
+        self.assertEqual(player.scroll, 4)
+
+    def test_keyboard_scroll_keys_cover_lines_pages_home_and_end(self):
+        player = bare_player(visible=5)
+        player.songs = list(range(20))
+        self.assertTrue(player._handle_list_scroll_key(play.curses.KEY_DOWN))
+        self.assertEqual(player.scroll, 1)
+        self.assertTrue(player._handle_list_scroll_key(play.curses.KEY_NPAGE))
+        self.assertEqual(player.scroll, 5)
+        self.assertTrue(player._handle_list_scroll_key(play.curses.KEY_END))
+        self.assertEqual(player.scroll, 15)
+        self.assertTrue(player._handle_list_scroll_key(play.curses.KEY_PPAGE))
+        self.assertEqual(player.scroll, 11)
+        self.assertTrue(player._handle_list_scroll_key(play.curses.KEY_HOME))
+        self.assertEqual(player.scroll, 0)
+        self.assertFalse(player._handle_list_scroll_key(ord("x")))
+
+    def test_clamp_scroll_handles_negative_and_shrinking_lists(self):
+        player = bare_player(visible=4)
+        player.songs = list(range(10))
+        player.scroll = -3
+        player._clamp_scroll()
+        self.assertEqual(player.scroll, 0)
+        player.scroll = 6
+        player.songs = list(range(5))
+        player._clamp_scroll()
+        self.assertEqual(player.scroll, 1)
+
+    def test_youtube_rebuild_preserves_valid_scroll_position(self):
+        player = bare_player(visible=4)
+        player.youtube_preview_enabled = True
+        player.youtube_results = list(range(10))
+        player.scroll = 5
+        player.selected_songs = {"old"}
+        player._selection_anchor = "old"
+        player.col_width = 8
+        player._schedule_youtube_result_search = lambda: False
+        player._needs_redraw_hdr = False
+
+        player._apply_search_filter()
+
+        self.assertEqual(player.scroll, 5)
+        self.assertEqual(player.songs, [])
+        self.assertEqual(player.selected_songs, set())
+
+    def test_local_filter_clamps_scroll_after_results_shrink(self):
+        player = bare_player(visible=3)
+        player.all_songs = ["alpha.mp3", "beta.mp3", "gamma.mp3", "zeta.mp3"]
+        player._all_songs_set = set(player.all_songs)
+        player._song_lower_cache = {name: name.lower() for name in player.all_songs}
+        player.playlists = {}
+        player.active_tab = 0
+        player.tab_names = ["All"]
+        player.search = "zeta"
+        player.sort_mode = "name"
+        player.sort_reverse = False
+        player._plays_cache = {}
+        player.selected_songs = set()
+        player._selection_anchor = None
+        player.scroll = 3
+        player._needs_redraw_hdr = False
+
+        player._apply_search_filter()
+
+        self.assertEqual(player.songs, ["zeta.mp3"])
+        self.assertEqual(player.scroll, 0)
+
+    def test_radio_playback_does_not_empty_the_visible_mp3_library(self):
+        player = bare_player(visible=3)
+        player.apple_radio_enabled = True
+        player.all_songs = ["alpha", "beta"]
+        player._all_songs_set = set(player.all_songs)
+        player._song_lower_cache = {name: name for name in player.all_songs}
+        player.playlists = {}
+        player.active_tab = 0
+        player.tab_names = ["All"]
+        player.search = ""
+        player.sort_mode = "name"
+        player.sort_reverse = False
+        player._plays_cache = {}
+        player.selected_songs = set()
+        player._selection_anchor = None
+        player._needs_redraw_hdr = False
+
+        player._apply_search_filter()
+
+        self.assertEqual(player.songs, ["alpha", "beta"])
+
+    def test_viewed_playlist_becomes_the_playback_and_shuffle_source(self):
+        player = bare_player()
+        player.all_songs = ["alpha", "beta", "gamma"]
+        player._all_songs_set = set(player.all_songs)
+        player._song_lower_cache = {name: name for name in player.all_songs}
+        player.playlists = {"Mix": ["beta", "gamma"]}
+        player.playlist_tags = {}
+        player.tab_names = ["All", "Mix"]
+        player.active_tab = 1
+        player.play_tab = "All"
+        player.play_pool = list(player.all_songs)
+        player._pending_shuffle_next = "alpha"
+        player.sort_mode = "name"
+        player.sort_reverse = False
+        player._plays_cache = {}
+        player._needs_redraw_hdr = False
+
+        source = player._use_viewed_playlist_for_playback()
+
+        self.assertEqual(source, "Mix")
+        self.assertEqual(player.play_tab, "Mix")
+        self.assertEqual(player.play_pool, ["beta", "gamma"])
+        self.assertIsNone(player._pending_shuffle_next)
+
+
+class PureHelperTests(unittest.TestCase):
+    def test_mp3_delete_uses_centered_confirmation_and_cleans_up_on_cancel(self):
+        player = bare_player()
+        player.delete_confirm_songs = []
+        player.confirm_open = False
+        player.confirm_msg = ""
+        player.confirm_action = None
+        player.confirm_cancel_action = None
+        player.confirm_sel = 1
+        player._confirm_btn_regions = []
+        player._needs_redraw_confirm = False
+        player._clear_selection_after_action = mock.Mock()
+        player._mark_all_dirty = mock.Mock()
+        player.focused = "list"
+        player.status_msg = ""
+        player._needs_redraw_hdr = False
+        player._needs_redraw_inp = False
+
+        player._start_delete_confirm(["song"])
+
+        self.assertTrue(player.confirm_open)
+        self.assertEqual(player.confirm_msg, "Delete MP3 'song'?")
+        player._confirm_no()
+        self.assertFalse(player.confirm_open)
+        self.assertEqual(player.delete_confirm_songs, [])
+        self.assertEqual(player.status_msg, "Delete canceled")
+
+    def test_duration_cache_uses_matching_file_mtime(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            path = Path(folder, "song.mp3")
+            path.touch()
+            mtime = path.stat().st_mtime_ns
+            player.meta = {
+                "song": {"duration_ms": 1234, "duration_mtime_ns": mtime}
+            }
+            player._duration_ms_cache = {}
+            player._queue_duration_load = mock.Mock()
+            self.assertEqual(player._cached_duration_ms("song"), 1234)
+            player._queue_duration_load.assert_not_called()
+
+    def test_volume_adjustment_clamps_and_applies_once(self):
+        player = bare_player()
+        player.vol = 0.9
+        player._needs_redraw_hdr = False
+        player._apply_volume = mock.Mock()
+        player._adjust_volume(5)
+        self.assertEqual(player.vol, 1.0)
+        player._apply_volume.assert_called_once_with(force=True)
+        player._adjust_volume(1)
+        player._apply_volume.assert_called_once_with(force=True)
+        player._adjust_volume(-20)
+        self.assertEqual(player.vol, 0.0)
+
+    def test_elapsed_time_accounts_for_pause_duration(self):
+        player = bare_player()
+        player._play_start = 100.0
+        player._pause_offset = 2.0
+        player.paused = False
+        with mock.patch.object(play.time, "monotonic", return_value=107.0):
+            self.assertEqual(player._elapsed_ms(), 5_000)
+        player.paused = True
+        player._pause_start = 106.0
+        self.assertEqual(player._elapsed_ms(), 4_000)
+
+    def test_screen_lock_only_queues_pause_and_matching_resume(self):
+        player = bare_player()
+        player._screen_locked = False
+        player._paused_by_lock = False
+        player._pending_media_toggle = False
+        player.current = "song"
+        player.paused = False
+        player._handle_lock_state(True)
+        self.assertTrue(player._screen_locked)
+        self.assertTrue(player._paused_by_lock)
+        self.assertTrue(player._pending_media_toggle)
+
+        player._pending_media_toggle = False
+        player.paused = True
+        player._handle_lock_state(False)
+        self.assertFalse(player._screen_locked)
+        self.assertTrue(player._pending_media_toggle)
+
+    def test_selection_shift_range_and_clear(self):
+        player = bare_player()
+        player.songs = ["a", "b", "c", "d"]
+        player.selected_songs = {"b"}
+        player._selection_anchor = "b"
+        player._select_song_number("d", 3, shift=True)
+        self.assertEqual(player.selected_songs, {"b", "c", "d"})
+        self.assertTrue(player._clear_selection())
+        self.assertEqual(player.selected_songs, set())
+
+    def test_download_file_discovery_prefers_audio_formats(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "track.webm").touch()
+            Path(folder, "track.mp3").touch()
+            Path(folder, "ignored.mp3.part").touch()
+            self.assertTrue(player._find_downloaded_media(folder).endswith("track.mp3"))
+            self.assertTrue(player._find_downloaded_ext(folder, "webm").endswith("track.webm"))
+            self.assertEqual(player._unique_path(str(Path(folder, "new.mp3"))), str(Path(folder, "new.mp3")))
+    def test_volume_analysis_does_not_hold_queue_lock_during_expensive_work(self):
+        class TrackingLock:
+            def __init__(self):
+                self.inside = False
+
+            def __enter__(self):
+                self.inside = True
+
+            def __exit__(self, *_):
+                self.inside = False
+
+        class ImmediateThread:
+            def __init__(self, target, **_):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        player = bare_player()
+        player._all_songs_set = {"song"}
+        player._volume_multiplier_pending = set()
+        player._volume_multiplier_lock = TrackingLock()
+        player._stored_volume_multiplier = mock.Mock(return_value=None)
+        player.current = "None"
+        player._needs_redraw_hdr = False
+
+        def compute(_name):
+            self.assertFalse(player._volume_multiplier_lock.inside)
+            return 1.0
+
+        player._compute_volume_multiplier = compute
+        with (
+            mock.patch.object(play.shutil, "which", return_value="/usr/bin/ffmpeg"),
+            mock.patch.object(play.threading, "Thread", ImmediateThread),
+        ):
+            player._queue_volume_multiplier_compute("song")
+        self.assertEqual(player._volume_multiplier_pending, set())
+
+    def test_text_editor_navigation_deletion_and_kill_yank(self):
+        player = bare_player()
+        player.search = "one two"
+        player.search_cursor = len(player.search)
+        player._text_kill_ring = ""
+        player._needs_redraw_inp = False
+        player._search_changed = mock.Mock()
+
+        self.assertTrue(player._edit_text_field("search", 23))  # Ctrl-W
+        self.assertEqual(player.search, "one ")
+        self.assertEqual(player._text_kill_ring, "two")
+        self.assertTrue(player._edit_text_field("search", 25))  # Ctrl-Y
+        self.assertEqual(player.search, "one two")
+        self.assertTrue(player._edit_text_field("search", play.curses.KEY_HOME))
+        self.assertEqual(player.search_cursor, 0)
+        self.assertTrue(player._edit_text_field("search", play.curses.KEY_DC))
+        self.assertEqual(player.search, "ne two")
+
+    def test_playlist_rename_editor_redraws_shared_input_bar(self):
+        player = bare_player()
+        player.rename_buf = "Mix"
+        player.rename_cursor = 3
+        player._text_kill_ring = ""
+        player._needs_redraw_inp = False
+        player._needs_redraw_tabs = False
+
+        self.assertTrue(player._edit_text_field("tab_rename", ord("!")))
+
+        self.assertEqual(player.rename_buf, "Mix!")
+        self.assertEqual(player.rename_cursor, 4)
+        self.assertTrue(player._needs_redraw_inp)
+        self.assertFalse(player._needs_redraw_tabs)
+
+    def test_playlist_round_trip_deduplicates_invalid_entries(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, play.PLAYLISTS_FILE).write_text(
+                json.dumps(
+                    {
+                        "All": ["ignored"],
+                        "": ["ignored"],
+                        "  Mix  ": ["a", "a", 2, "b"],
+                    }
+                )
+            )
+            self.assertEqual(player._load_playlists(), {"Mix": ["a", "b"]})
+
+    def test_tagged_playlist_finds_matching_mp3s_and_manual_playlist_uses_drags(self):
+        player = bare_player()
+        player.all_songs = [
+            "[OR] vampire", "[21P] Lavish", "[or] drivers license", "Golden"
+        ]
+        player.playlists = {"Olivia": ["Golden"]}
+        player.playlist_tags = {"Olivia": "OR"}
+
+        self.assertEqual(
+            player._playlist_song_names("Olivia"),
+            ["[OR] vampire", "[or] drivers license"],
+        )
+        player._emit_notification = mock.Mock()
+        self.assertEqual(player._add_songs_to_playlist("Olivia", ["Golden"]), 0)
+        self.assertEqual(player.playlists["Olivia"], ["Golden"])
+
+        player.playlist_tags.clear()
+        self.assertEqual(player._playlist_song_names("Olivia"), ["Golden"])
+
+    def test_playlist_tag_rejects_square_brackets(self):
+        player = bare_player()
+        player.playlists = {"Olivia": []}
+        player.playlist_tags = {}
+        player._emit_notification = mock.Mock()
+
+        self.assertFalse(player._set_playlist_tag("Olivia", "[OR]"))
+        self.assertEqual(player.playlist_tags, {})
+        player._emit_notification.assert_called_once()
+
+    def test_legacy_json_files_migrate_to_one_cache(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, play.LEGACY_META_FILE).write_text(
+                json.dumps({"song": {"plays": 3}})
+            )
+            Path(folder, play.LEGACY_PLAYLISTS_FILE).write_text(
+                json.dumps({"Mix": ["song"]})
+            )
+            Path(folder, play.LEGACY_ANALYSIS_FILE).write_text(
+                json.dumps({"_version": 5, "song": {"loudness": -10.0}})
+            )
+
+            cache = player._load_cache()
+
+            self.assertEqual(cache["songs"], {"song": {"plays": 3}})
+            self.assertEqual(cache["playlists"], {"Mix": ["song"]})
+            self.assertEqual(
+                cache["analysis"],
+                {"_version": 5, "song": {"loudness": -10.0}},
+            )
+            self.assertTrue(Path(folder, play.CACHE_FILE).exists())
+            self.assertFalse(Path(folder, play.LEGACY_META_FILE).exists())
+            self.assertFalse(Path(folder, play.LEGACY_PLAYLISTS_FILE).exists())
+            self.assertFalse(Path(folder, play.LEGACY_ANALYSIS_FILE).exists())
+
+    def test_malformed_meta_shape_and_counts_are_safe(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, play.META_FILE).write_text(json.dumps(["not", "a", "dict"]))
+            self.assertEqual(player._load_meta(), {})
+        self.assertEqual(player._extract_count({"plays": "12"}), 12)
+        self.assertEqual(player._extract_count({"plays": "broken"}), 0)
+        self.assertEqual(player._extract_count({"plays": -2}), 0)
+
+    def test_increment_repairs_string_play_count(self):
+        player = bare_player()
+        player.meta = {"song": {"plays": "4"}}
+        player._plays_cache = {"song": 4}
+        player._total_listen_hours_cache = {}
+        player._meta_dirty = False
+        player._inc_plays("song", 1)
+        self.assertEqual(player.meta["song"]["plays"], 5)
+        self.assertEqual(player._plays_cache["song"], 5)
+
+    def test_playlist_rename_does_not_overwrite_existing_playlist(self):
+        player = bare_player()
+        player.playlists = {"Road": ["one"], "Work": ["two"]}
+        player.status_msg = ""
+        player._needs_redraw_hdr = False
+
+        player._rename_playlist("Road", "Work")
+
+        self.assertEqual(player.playlists, {"Road": ["one"], "Work": ["two"]})
+        self.assertIn("already exists", player.status_msg)
+
+    def test_volume_multiplier_peak_target_and_limits(self):
+        self.assertAlmostEqual(play.Player._volume_multiplier_from_peak(-3), 1.0)
+        self.assertAlmostEqual(play.Player._volume_multiplier_from_peak(-9), 1.0)
+        self.assertLess(play.Player._volume_multiplier_from_peak(0), 1.0)
+        self.assertEqual(play.Player._volume_multiplier_from_peak(None), 1.0)
+
+    def test_youtube_count_parsing_and_formatting(self):
+        player = bare_player()
+        self.assertEqual(player._parse_yt_count("1.2K views"), 1200)
+        self.assertEqual(player._parse_yt_count("3M"), 3_000_000)
+        self.assertEqual(player._fmt_yt_count(1_250), "1.2K")
+        self.assertEqual(player._fmt_yt_count(None), "-")
+        self.assertEqual(player._fmt_yt_count(float("inf")), "-")
+        self.assertIsNone(player._coerce_yt_int(float("inf")))
+
+    def test_youtube_download_progress_parsing(self):
+        progress = play.Player._parse_ytdlp_progress_line(
+            "__ANTARCTITEEX_PROGRESS__ 42.5%\t3.2MiB/s\t00:08"
+        )
+        self.assertEqual(
+            progress,
+            {"percent": 42.5, "speed": "3.2MiB/s", "eta": "00:08"},
+        )
+        self.assertIsNone(
+            play.Player._parse_ytdlp_progress_line("[download] ordinary output")
+        )
+
+    def test_bulk_playlist_add_reports_count_and_notification(self):
+        player = bare_player()
+        player.playlists = {"Mix": ["a"]}
+        player.play_tab = "All"
+        player._save_playlists = mock.Mock()
+        player._rebuild = mock.Mock()
+        notifications = []
+        player._ui_notify = lambda message, **options: notifications.append(
+            (message, options)
+        )
+
+        added = player._add_songs_to_playlist("Mix", ["a", "b", "c"])
+
+        self.assertEqual(added, 2)
+        self.assertEqual(player.playlists["Mix"], ["a", "b", "c"])
+        self.assertEqual(notifications[0][0], "Added 2 songs to 'Mix'")
+
+    def test_youtube_sort_tolerates_mixed_external_value_types(self):
+        player = bare_player()
+        player.youtube_sort_mode = "views"
+        player.youtube_sort_reverse = True
+        player.youtube_results = [
+            {"title": "text", "views": "20", "kind": "video"},
+            {"title": None, "views": 5, "kind": "video"},
+            {"title": "bad", "views": "unknown", "kind": "video"},
+        ]
+        player._sort_youtube_results()
+        self.assertEqual(player.youtube_results[0]["title"], "text")
+
+    def test_youtube_urls_and_ids(self):
+        player = bare_player()
+        self.assertIn("search_query=a+%26+b", player._youtube_search_url("a & b"))
+        self.assertEqual(
+            player._youtube_video_id_from_url("https://youtu.be/dQw4w9WgXcQ"),
+            "dQw4w9WgXcQ",
+        )
+        self.assertEqual(player._youtube_abs_url("/@music"), "https://www.youtube.com/@music")
+        self.assertEqual(
+            player._youtube_channel_videos_target("https://youtube.com/@music"),
+            "https://youtube.com/@music/videos",
+        )
+
+    def test_youtube_result_extraction_deduplicates_and_skips_invalid_rows(self):
+        player = bare_player()
+        entries = [
+            {"id": "abc", "title": "First", "url": "abc", "view_count": 10},
+            {"id": "abc", "title": "Duplicate", "url": "abc"},
+            {"id": "", "title": ""},
+            {"id": "UC123", "title": "Channel", "url": "@channel", "_type": "channel"},
+        ]
+        results = player._extract_youtube_search_results(entries, 10)
+        self.assertEqual([row["kind"] for row in results], ["video", "channel"])
+        self.assertEqual(results[0]["url"], "https://www.youtube.com/watch?v=abc")
+
+    def test_ytdlp_format_fallback_removes_format_and_value(self):
+        player = bare_player()
+        self.assertEqual(
+            player._without_ytdlp_format(["yt-dlp", "-f", "ba", "--quiet", "url"]),
+            ["yt-dlp", "--quiet", "url"],
+        )
+
+    def test_time_and_truncation_formatters(self):
+        self.assertEqual(play.Player._fmt_time(65_000), "1:05")
+        self.assertEqual(play.Player._fmt_yt_duration(3_661), "1:01:01")
+        self.assertEqual(play.Player._fmt_yt_duration(None), "--:--")
+        self.assertEqual(play.Player._fmt_listen_hours(-2), "0.00h")
+        self.assertEqual(play.Player._truncate("abcdef", 5), "ab...")
+        self.assertEqual(
+            play.Player._truncate_song_name("[Aurora] Runaway", 8),
+            "[Aurora]",
+        )
+        self.assertEqual(
+            play.Player._truncate_song_name("[21P] At The Risk", 12),
+            "[21P] At...",
+        )
+        self.assertEqual(
+            play.Player._without_artist_tag("[21P] At The Risk"),
+            "At The Risk",
+        )
+        self.assertEqual(
+            play.Player._without_artist_tag("Golden"),
+            "Golden",
+        )
+
+    def test_filename_and_text_helpers(self):
+        player = bare_player()
+        self.assertEqual(player._clean_mp3_basename("  bad/name?.mp3  "), "bad name")
+        self.assertEqual(player._clean_paste_text("a\r\nb\x00"), "a b")
+        self.assertEqual(player._prev_word_pos("one two", 7), 4)
+        self.assertEqual(player._next_word_pos("one two", 0), 4)
+
+    def test_shuffle_weights_are_normalized(self):
+        player = bare_player()
+        player._plays_cache = {"a": 0, "b": 2, "c": 8}
+        player.current = "None"
+        rows = player._shuffle_weight_rows(["a", "b", "c"])
+        self.assertAlmostEqual(sum(row["probability"] for row in rows), 1.0)
+        weights = {row["name"]: row["weight"] for row in rows}
+        self.assertGreater(weights["a"], weights["c"])
+
+
+@unittest.skipUnless(play.TEXTUAL_AVAILABLE, "Textual is not installed")
+class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def assert_inside(test_case, widget, width, height):
+        region = widget.region
+        test_case.assertGreaterEqual(region.x, 0)
+        test_case.assertGreaterEqual(region.y, 0)
+        test_case.assertLessEqual(region.right, width)
+        test_case.assertLessEqual(region.bottom, height)
+
+    async def test_modals_and_main_layout_survive_extreme_resizes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 32)) as pilot:
+                    app.action_show_help()
+                    await pilot.pause()
+                    self.assert_inside(
+                        self, app.screen.query_one("#help-box"), 100, 32
+                    )
+
+                    # Resizing while a modal is current must still update the
+                    # underlying player screen's responsive layout.
+                    await pilot.resize_terminal(40, 12)
+                    await pilot.pause()
+                    self.assert_inside(
+                        self, app.screen.query_one("#help-box"), 40, 12
+                    )
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    self.assertTrue(
+                        {"narrow", "tiny", "short", "very-short"}.issubset(
+                            app.screen.classes
+                        )
+                    )
+                    self.assertEqual(app.query_one("#editor").region.height, 0)
+                    self.assert_inside(self, app.query_one("#library"), 40, 12)
+
+                    menus = (
+                        (play.PlaylistMenuScreen("P", 999, 999), "#playlist-menu"),
+                        (play.SongMenuScreen(["Song"], 999, 999, "P"), "#song-menu"),
+                        (play.AppleRadioMenuScreen(999, 999), "#apple-radio-menu"),
+                    )
+                    for screen, selector in menus:
+                        await pilot.resize_terminal(100, 32)
+                        app.push_screen(screen)
+                        await pilot.pause()
+                        await pilot.resize_terminal(20, 8)
+                        await pilot.pause()
+                        self.assert_inside(
+                            self, app.screen.query_one(selector), 20, 8
+                        )
+                        await pilot.press("escape")
+                        await pilot.pause()
+
+
+if __name__ == "__main__":
+    unittest.main()

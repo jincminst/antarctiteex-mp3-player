@@ -1,0 +1,15 @@
+*.mp3
+.mp3cache.json
+.play_volume_cache/
+.yt-dlp-venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+.mp3meta.json
+.idea/
+error.txt
+play ORIGINAL.py
+.DS_Store
