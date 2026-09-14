@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import play
+from rich.style import Style
 
 
 class FakeListWindow:
@@ -1073,6 +1074,59 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         )
                         await pilot.press("escape")
                         await pilot.pause()
+
+    async def test_sort_does_not_scroll_to_playing_row_and_preview_is_highlighted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for index in range(100):
+                Path(folder, f"Track {index:03}.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 24)) as pilot:
+                    player = app.player
+                    table = app.query_one("#table")
+                    player.current = "Track 010"
+                    app.refresh_ui(rebuild_table=True)
+                    await pilot.pause()
+                    table.scroll_to(y=0, animate=False, force=True)
+                    await pilot.pause()
+
+                    # Click the Name header. Descending order puts the playing
+                    # song near the bottom, but the viewport must remain at 0.
+                    await pilot.click("#table", offset=(12, 0))
+                    await pilot.pause()
+                    await pilot.pause()
+                    self.assertTrue(player.sort_reverse)
+                    self.assertEqual(table.scroll_y, 0)
+                    self.assertEqual(table.cursor_row, 0)
+                    self.assertEqual(
+                        table._music_highlighted_row_key, "Track 010"
+                    )
+
+                    player.youtube_preview_enabled = True
+                    player.youtube_results = [
+                        {"id": "a", "title": "First", "channel": "One"},
+                        {"id": "b", "title": "Second", "channel": "Two"},
+                    ]
+                    # Simulate stats being added after preview selection; the
+                    # stable video id should still identify the active row.
+                    player._youtube_active_result = {
+                        "id": "b", "title": "Second", "channel": "Two"
+                    }
+                    player.youtube_results[1]["views"] = 123
+                    player._youtube_loading = True
+                    app.refresh_ui(rebuild_table=True)
+                    await pilot.pause()
+                    self.assertEqual(
+                        table._music_highlighted_row_key, "youtube-1"
+                    )
+                    rendered = table._render_cell(1, 1, Style(), 20)
+                    backgrounds = {
+                        segment.style.bgcolor.name
+                        for line in rendered
+                        for segment in line
+                        if segment.style and segment.style.bgcolor
+                    }
+                    self.assertIn("#222222", backgrounds)
 
 
 if __name__ == "__main__":

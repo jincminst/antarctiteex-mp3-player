@@ -2558,6 +2558,22 @@ class Player:
             "Loading...",
         )
 
+    def _is_active_youtube_result(self, result):
+        """Match a result to the preview even after stats enrich its mapping."""
+        active = self._youtube_active_result
+        if not isinstance(result, dict) or not isinstance(active, dict):
+            return False
+        for key in ("id", "url", "webpage_url"):
+            left = str(result.get(key) or "")
+            right = str(active.get(key) or "")
+            if left and right:
+                return left == right
+        return (
+            str(result.get("title") or "") == str(active.get("title") or "")
+            and str(result.get("channel") or "")
+            == str(active.get("channel") or "")
+        )
+
     def _is_youtube_preview_name(self, name):
         return self._youtube_temp_path is not None and name not in (
             "None",
@@ -7437,6 +7453,26 @@ if TEXTUAL_AVAILABLE:
             self._suppress_click = False
             self._drag_press_id = 0
             self._drag_hold_timer = None
+            self._music_highlighted_row_key = None
+
+        def _render_cell(
+            self, row_index, column_index, base_style, width,
+            cursor=False, hover=False,
+        ):
+            """Render the active media row without moving the table cursor."""
+            highlighted = self._music_highlighted_row_key
+            if row_index >= 0 and highlighted is not None:
+                try:
+                    row_key = str(self._row_locations.get_key(row_index).value)
+                except Exception:
+                    row_key = ""
+                cursor = row_key == highlighted
+            else:
+                cursor = False
+            return super()._render_cell(
+                row_index, column_index, base_style, width,
+                cursor=cursor, hover=hover,
+            )
 
         class SongClicked(Message):
             def __init__(
@@ -8621,8 +8657,28 @@ if TEXTUAL_AVAILABLE:
                     # viewport pinned left so trackpad side-scroll cannot hide
                     # leading artist tags such as [21P] or [Aurora].
                     table.scroll_to(x=0, animate=False, force=True)
-                table.show_cursor = False
+                # SongTable paints the active media row with the cursor style,
+                # but keeps Textual's actual navigation cursor parked at row 0.
+                # Header sorting can then return to the top instead of chasing
+                # whichever MP3 is currently playing.
+                table.show_cursor = True
+                table.move_cursor(row=0, column=0, scroll=False)
                 if p.youtube_preview_enabled:
+                    preview_active = (
+                        p._youtube_loading or p._is_youtube_preview_current()
+                    )
+                    active_row_key = next(
+                        (
+                            f"youtube-{index}"
+                            for index, result in enumerate(p.youtube_results)
+                            if preview_active
+                            and p._is_active_youtube_result(result)
+                        ),
+                        None,
+                    )
+                    if table._music_highlighted_row_key != active_row_key:
+                        table._music_highlighted_row_key = active_row_key
+                        table.refresh()
                     expected_keys = [f"youtube-{index}" for index in range(len(p.youtube_results))]
                     existing_keys = [str(row.key.value) for row in table.ordered_rows]
                     update_in_place = existing_keys == expected_keys
@@ -8671,11 +8727,12 @@ if TEXTUAL_AVAILABLE:
                 update_in_place = existing_names == list(p.songs)
                 if not update_in_place:
                     table.clear()
-                current_row = None
+                active_row_key = p.current if p.current in p.songs else None
+                if table._music_highlighted_row_key != active_row_key:
+                    table._music_highlighted_row_key = active_row_key
+                    table.refresh()
                 for index, name in enumerate(p.songs, 1):
                     duration_ms = p._cached_duration_ms(name)
-                    if name == p.current:
-                        current_row = index - 1
                     def cell(value, justify="left"):
                         return Text(str(value), justify=justify)
                     values = (
@@ -8698,9 +8755,6 @@ if TEXTUAL_AVAILABLE:
                             table.update_cell(name, column, value)
                     else:
                         table.add_row(*values, key=name)
-                if current_row is not None:
-                    table.move_cursor(row=current_row, column=0, scroll=False)
-                    table.show_cursor = True
                 self.call_after_refresh(
                     lambda: table.scroll_to(y=old_scroll_y, animate=False, force=True)
                 )
