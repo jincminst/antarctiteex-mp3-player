@@ -102,10 +102,13 @@ VOLUME_TARGET_PEAK_DB = -3.0
 UI_REFRESH_MS_ACTIVE = 500
 UI_REFRESH_MS_IDLE = 2000
 UI_REFRESH_MS_INPUT = 1
+TEXTUAL_TICK_S = 1.0
 VOLUME_ENFORCE_S = 1.0
 PLAYBACK_POLL_S = 1.0
 DURATION_REDRAW_S = 1.0
 SCREEN_LOCK_POLL_S = 2.0
+OUTPUT_SAFETY_ACTIVE_POLL_S = 2.0
+OUTPUT_SAFETY_IDLE_POLL_S = 10.0
 APPLE_RADIO_POLL_S = 5.0
 YT_PREVIEW_AUDIO_QUALITY = "0"
 YT_PREVIEW_FORMAT = "ba[ext=m4a]/ba[ext=mp3]/ba[ext=ogg]/ba[acodec^=mp4a]/ba[acodec^=opus]/ba/b"
@@ -268,6 +271,7 @@ class Player:
         self._duration_load_queue = deque()
         self._duration_load_pending = set()
         self._duration_load_lock = threading.Lock()
+        self._duration_load_wakeup = threading.Event()
         self._volume_multiplier_lock = threading.Lock()
         self._volume_multiplier_pending = set()
         self._song_lower_cache = {}
@@ -331,6 +335,7 @@ class Player:
         self._last_session_save_at = time.monotonic()
         self._last_session_snapshot = None
         self._current_output_device = ""
+        self._output_safety_wakeup = threading.Event()
         self._safety_lock = threading.Lock()
         self._find_my_log_proc = None
         self._background_services_started = False
@@ -1057,6 +1062,7 @@ class Player:
         with self._safety_lock:
             if force_enable:
                 self.non_speaker_mode = True
+                self._output_safety_wakeup.set()
             if self.current in ("None", "Loading...") or self.paused:
                 self.dirty = True
                 self._wake_ui()
@@ -1133,6 +1139,14 @@ class Player:
 
         def watch_output():
             while self.running and not self._shutting_down:
+                # With safety disabled there is nothing to enforce. Sleeping
+                # on an event avoids continuously spawning a command-line
+                # helper in an otherwise idle player; the toggle wakes this
+                # thread immediately when safety is enabled again.
+                if not self.non_speaker_mode:
+                    self._output_safety_wakeup.wait(timeout=60.0)
+                    self._output_safety_wakeup.clear()
+                    continue
                 try:
                     result = subprocess.run(
                         [switch_audio, "-c", "-t", "output"],
@@ -1142,7 +1156,17 @@ class Player:
                         self._handle_output_device(result.stdout)
                 except Exception:
                     pass
-                time.sleep(0.15)
+                active = (
+                    self.current not in ("None", "Loading...")
+                    and not self.paused
+                )
+                interval = (
+                    OUTPUT_SAFETY_ACTIVE_POLL_S
+                    if active
+                    else OUTPUT_SAFETY_IDLE_POLL_S
+                )
+                self._output_safety_wakeup.wait(timeout=interval)
+                self._output_safety_wakeup.clear()
 
         threading.Thread(target=watch_output, daemon=True).start()
 
@@ -1719,6 +1743,7 @@ class Player:
                 return
             self._duration_load_pending.add(name)
             self._duration_load_queue.append(name)
+            self._duration_load_wakeup.set()
 
     def _start_duration_loader(self):
         def worker():
@@ -1727,8 +1752,12 @@ class Player:
                 with self._duration_load_lock:
                     if self._duration_load_queue:
                         name = self._duration_load_queue.popleft()
+                    else:
+                        self._duration_load_wakeup.clear()
                 if name is None:
-                    time.sleep(0.1)
+                    # New work sets the event in _queue_duration_load. Keep a
+                    # long timeout only as a shutdown/fault-tolerance check.
+                    self._duration_load_wakeup.wait(timeout=60.0)
                     continue
                 self._load_duration_ms(name)
                 with self._duration_load_lock:
@@ -7226,6 +7255,8 @@ class Player:
         self._save_session_if_due(force=True)
         self._shutting_down = True
         self.running = False
+        self._duration_load_wakeup.set()
+        self._output_safety_wakeup.set()
         # Apple Radio plays through the external Music app rather than
         # pygame, so it must be stopped explicitly on every shutdown path.
         self._stop_apple_radio_audio()
@@ -8200,7 +8231,7 @@ if TEXTUAL_AVAILABLE:
             self._configure_table_columns(False)
             self.refresh_playlists()
             self.refresh_ui(rebuild_table=True)
-            self.set_interval(0.5, self.tick)
+            self.set_interval(TEXTUAL_TICK_S, self.tick)
             # Native media-key and macOS safety integrations can perform
             # relatively expensive framework imports. Let the first screen
             # paint and become interactive before starting them.
@@ -9043,6 +9074,7 @@ if TEXTUAL_AVAILABLE:
                 else: p._switch_play_mode()
             elif button_id == "non-speaker-toggle":
                 p.non_speaker_mode = not p.non_speaker_mode
+                p._output_safety_wakeup.set()
                 if not p.non_speaker_mode:
                     p._paused_by_speaker_safety = False
                 if p.non_speaker_mode and p._is_builtin_speaker_name(p._current_output_device):

@@ -658,6 +658,74 @@ class PureHelperTests(unittest.TestCase):
             self.assertEqual(player._cached_duration_ms("song"), 1234)
             player._queue_duration_load.assert_not_called()
 
+    def test_duration_queue_wakes_sleeping_loader(self):
+        player = bare_player()
+        player._duration_ms_cache = {}
+        player._duration_load_pending = set()
+        player._duration_load_queue = play.deque()
+        player._duration_load_lock = play.threading.Lock()
+        player._duration_load_wakeup = play.threading.Event()
+
+        player._queue_duration_load("song")
+
+        self.assertTrue(player._duration_load_wakeup.is_set())
+        self.assertEqual(list(player._duration_load_queue), ["song"])
+
+    def test_energy_saving_poll_rates_avoid_rapid_process_churn(self):
+        self.assertGreaterEqual(play.OUTPUT_SAFETY_ACTIVE_POLL_S, 1.0)
+        self.assertGreaterEqual(play.OUTPUT_SAFETY_IDLE_POLL_S, 5.0)
+        self.assertGreaterEqual(play.TEXTUAL_TICK_S, 1.0)
+
+    def test_output_watcher_spawns_nothing_while_safety_is_disabled(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.non_speaker_mode = False
+        player._output_safety_wakeup = mock.Mock()
+        player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
+            player, "running", False
+        )
+        thread = mock.Mock()
+        with (
+            mock.patch.object(play.sys, "platform", "darwin"),
+            mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(play.threading, "Thread", return_value=thread) as make_thread,
+            mock.patch.object(play.subprocess, "run") as run,
+        ):
+            player._start_output_safety_watcher()
+            make_thread.call_args.kwargs["target"]()
+
+        run.assert_not_called()
+
+    def test_output_watcher_uses_energy_saving_active_interval(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.non_speaker_mode = True
+        player.current = "song"
+        player.paused = False
+        player._handle_output_device = mock.Mock()
+        player._output_safety_wakeup = mock.Mock()
+        player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
+            player, "running", False
+        )
+        result = mock.Mock(returncode=0, stdout="Headphones\n")
+        thread = mock.Mock()
+        with (
+            mock.patch.object(play.sys, "platform", "darwin"),
+            mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(play.threading, "Thread", return_value=thread) as make_thread,
+            mock.patch.object(play.subprocess, "run", return_value=result) as run,
+        ):
+            player._start_output_safety_watcher()
+            make_thread.call_args.kwargs["target"]()
+
+        run.assert_called_once()
+        player._handle_output_device.assert_called_once_with("Headphones\n")
+        player._output_safety_wakeup.wait.assert_called_once_with(
+            timeout=play.OUTPUT_SAFETY_ACTIVE_POLL_S
+        )
+
     def test_volume_adjustment_clamps_and_applies_once(self):
         player = bare_player()
         player.vol = 0.9
