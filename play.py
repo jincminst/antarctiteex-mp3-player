@@ -270,6 +270,7 @@ class Player:
         self._total_listen_hours_cache = {}
         self._duration_load_queue = deque()
         self._duration_load_pending = set()
+        self._duration_ui_updates = set()
         self._duration_load_lock = threading.Lock()
         self._duration_load_wakeup = threading.Event()
         self._volume_multiplier_lock = threading.Lock()
@@ -1704,6 +1705,8 @@ class Player:
     def _set_duration_cache(self, name, duration_ms):
         duration_ms = int(duration_ms)
         self._duration_ms_cache[name] = duration_ms
+        with self._duration_load_lock:
+            self._duration_ui_updates.add(name)
         self._total_listen_hours_cache.pop(name, None)
         # Keep the probe result across launches.  _cached_duration_ms validates
         # this against the MP3's mtime, so only new or changed files are read
@@ -1728,7 +1731,15 @@ class Player:
         if name == self.current and duration_ms > 0:
             self._song_len_ms = duration_ms
             self._needs_redraw_bar = True
-            self.dirty = True
+            if self.stdscr is not None:
+                self.dirty = True
+
+    def _take_duration_ui_updates(self):
+        """Return newly measured songs without polling or losing updates."""
+        with self._duration_load_lock:
+            updates = self._duration_ui_updates
+            self._duration_ui_updates = set()
+        return updates
 
     def _load_duration_ms(self, name):
         duration_ms = self._audio_duration_ms(self._song_path(name))
@@ -1770,7 +1781,12 @@ class Player:
                 else:
                     self._needs_redraw_hdr = True
                     self._needs_redraw_lst = True
-                    self.dirty = True
+                    # Textual applies these cells in one small batch on its
+                    # next one-second tick. Rebuilding a large table after
+                    # every ffprobe result can stall playback progress for
+                    # several seconds. The legacy curses UI still redraws.
+                    if self.stdscr is not None:
+                        self.dirty = True
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -8467,7 +8483,45 @@ if TEXTUAL_AVAILABLE:
             self.player._process_pending()
             self.player._queue_apple_radio_poll()
             self.player._save_session_if_due()
-            self.refresh_ui(rebuild_table=self.player.dirty)
+            duration_updates = self.player._take_duration_ui_updates()
+            if self.player.dirty:
+                self.refresh_ui(rebuild_table=True)
+            else:
+                # Keep the clock isolated from the much more expensive table
+                # and layout refresh. This callback runs once per second.
+                self.refresh_transport()
+                self._refresh_duration_cells(duration_updates)
+
+        def _refresh_duration_cells(self, names):
+            if not names:
+                return
+            p = self.player
+            table = self.query_one("#table", DataTable)
+            if getattr(table, "_music_schema", None) != "library":
+                return
+            existing_names = {
+                str(row.key.value) for row in table.ordered_rows
+            }
+            for name in names:
+                if name not in existing_names:
+                    continue
+                duration_ms = p._duration_ms_cache.get(name, 0)
+                table.update_cell(
+                    name,
+                    "duration",
+                    Text(
+                        p._fmt_time(duration_ms) if duration_ms > 0 else "--:--",
+                        justify="right",
+                    ),
+                )
+                table.update_cell(
+                    name,
+                    "listen",
+                    Text(
+                        p._fmt_listen_hours(p._total_listen_hours(name)),
+                        justify="right",
+                    ),
+                )
 
         def refresh_playlists(self):
             if not self.player:
@@ -8544,6 +8598,47 @@ if TEXTUAL_AVAILABLE:
                 else "Filter your library…"
             )
 
+        def refresh_transport(self):
+            """Refresh only elapsed time and progress, once per UI tick."""
+            p = self.player
+            if not p:
+                return
+            download_progress = p.youtube_download_progress or {}
+            download_active = bool(
+                p._youtube_download_loading and download_progress
+            )
+            elapsed, duration = p._current_pos_in_song()
+            if download_active:
+                phase = str(download_progress.get("phase") or "Downloading")
+                percent = download_progress.get("percent")
+                try:
+                    percent = max(0.0, min(100.0, float(percent)))
+                except (TypeError, ValueError):
+                    percent = 0.0
+                details = [f"{phase} {percent:.1f}%"]
+                speed = str(download_progress.get("speed") or "").strip()
+                eta = str(download_progress.get("eta") or "").strip()
+                if speed:
+                    details.append(speed)
+                if eta:
+                    details.append(f"ETA {eta}")
+                self.query_one("#time-label", Static).update("  ".join(details))
+                self.query_one("#progress", DurationBar).set_progress(percent, 100)
+            elif p.apple_radio_enabled:
+                self.query_one("#time-label", Static).update(
+                    "Playing through Apple Music"
+                    if p.apple_radio_active
+                    else "Select a station below"
+                )
+                self.query_one("#progress", DurationBar).set_progress(0, 0)
+            else:
+                self.query_one("#time-label", Static).update(
+                    f"{p._fmt_time(elapsed)} / {p._fmt_time(duration)}"
+                )
+                self.query_one("#progress", DurationBar).set_progress(
+                    elapsed, duration
+                )
+
         def refresh_ui(self, rebuild_table=False, preserve_scroll=True):
             p = self.player
             if not p:
@@ -8582,7 +8677,6 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#stats", Static).update(
                 p._library_stats_label()
             )
-            download_active = bool(p._youtube_download_loading and download_progress)
             transport_visible = (
                 not p.apple_radio_enabled
                 and p.current not in ("None", "Loading...")
@@ -8641,36 +8735,7 @@ if TEXTUAL_AVAILABLE:
             stop.display = p.youtube_preview_enabled and (
                 p._youtube_loading or p._is_youtube_preview_current()
             )
-            elapsed, duration = p._current_pos_in_song()
-            if download_active:
-                phase = str(download_progress.get("phase") or "Downloading")
-                percent = download_progress.get("percent")
-                try:
-                    percent = max(0.0, min(100.0, float(percent)))
-                except (TypeError, ValueError):
-                    percent = 0.0
-                details = [f"{phase} {percent:.1f}%"]
-                speed = str(download_progress.get("speed") or "").strip()
-                eta = str(download_progress.get("eta") or "").strip()
-                if speed:
-                    details.append(speed)
-                if eta:
-                    details.append(f"ETA {eta}")
-                self.query_one("#time-label", Static).update("  ".join(details))
-                self.query_one("#progress", DurationBar).set_progress(percent, 100)
-            else:
-                if p.apple_radio_enabled:
-                    self.query_one("#time-label", Static).update(
-                        "Playing through Apple Music"
-                        if p.apple_radio_active
-                        else "Select a station below"
-                    )
-                    self.query_one("#progress", DurationBar).set_progress(0, 0)
-                else:
-                    self.query_one("#time-label", Static).update(
-                        f"{p._fmt_time(elapsed)} / {p._fmt_time(duration)}"
-                    )
-                    self.query_one("#progress", DurationBar).set_progress(elapsed, duration)
+            self.refresh_transport()
             if rebuild_table:
                 table = self.query_one("#table", DataTable)
                 old_scroll_y = table.scroll_y if preserve_scroll else 0

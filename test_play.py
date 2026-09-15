@@ -674,7 +674,7 @@ class PureHelperTests(unittest.TestCase):
     def test_energy_saving_poll_rates_avoid_rapid_process_churn(self):
         self.assertGreaterEqual(play.OUTPUT_SAFETY_ACTIVE_POLL_S, 1.0)
         self.assertGreaterEqual(play.OUTPUT_SAFETY_IDLE_POLL_S, 5.0)
-        self.assertGreaterEqual(play.TEXTUAL_TICK_S, 1.0)
+        self.assertEqual(play.TEXTUAL_TICK_S, 1.0)
 
     def test_output_watcher_spawns_nothing_while_safety_is_disabled(self):
         player = bare_player()
@@ -1097,6 +1097,30 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
         test_case.assertGreaterEqual(region.y, 0)
         test_case.assertLessEqual(region.right, width)
         test_case.assertLessEqual(region.bottom, height)
+
+    async def test_idle_tick_refreshes_transport_without_rebuilding_table(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 24)):
+                    app.player.dirty = False
+                    with (
+                        mock.patch.object(app.player, "_process_pending"),
+                        mock.patch.object(app.player, "_queue_apple_radio_poll"),
+                        mock.patch.object(app.player, "_save_session_if_due"),
+                        mock.patch.object(
+                            app.player,
+                            "_take_duration_ui_updates",
+                            return_value=set(),
+                        ),
+                        mock.patch.object(app, "refresh_ui") as refresh_ui,
+                        mock.patch.object(app, "refresh_transport") as transport,
+                        mock.patch.object(app, "_refresh_duration_cells"),
+                    ):
+                        app.tick()
+
+                    transport.assert_called_once_with()
+                    refresh_ui.assert_not_called()
 
     async def test_modals_and_main_layout_survive_extreme_resizes(self):
         with tempfile.TemporaryDirectory() as folder:
