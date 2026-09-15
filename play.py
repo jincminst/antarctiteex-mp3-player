@@ -274,6 +274,7 @@ class Player:
         self._duration_load_lock = threading.Lock()
         self._duration_load_wakeup = threading.Event()
         self._volume_multiplier_lock = threading.Lock()
+        self._volume_analysis_lock = threading.Lock()
         self._volume_multiplier_pending = set()
         self._song_lower_cache = {}
         self._all_songs_set = set()
@@ -1644,7 +1645,10 @@ class Player:
 
         def worker():
             try:
-                with self._volume_multiplier_lock:
+                # Serialize the expensive ffmpeg work without holding the
+                # short-lived queue lock. A track change can then enqueue its
+                # own analysis immediately instead of waiting for ffmpeg.
+                with self._volume_analysis_lock:
                     if self._stored_volume_multiplier(name) is None:
                         self._compute_volume_multiplier(name)
                 if name == self.current:
@@ -1918,6 +1922,7 @@ class Player:
                     if not pygame.mixer.music.get_busy():
                         self._pending_preview_cleanup = True
                         self.dirty = True
+                        self._wake_ui()
                     continue
                 if self._song_len_ms <= 0:
                     continue
@@ -1928,6 +1933,7 @@ class Player:
                             self._pending_shuffle_next = (
                                 self._weighted_shuffle_choice(self.play_pool)
                             )
+                            self._wake_ui()
                     continue
                 if not pygame.mixer.music.get_busy():
                     if self._natural_loop_restart:
@@ -1936,6 +1942,7 @@ class Player:
                     self._natural_loop_restart = True
                     self._needs_redraw_bar = True
                     self.dirty = True
+                    self._wake_ui()
                     continue
             except Exception:
                 pass
@@ -4827,7 +4834,6 @@ class Player:
             pass
         try:
             self._current_volume_multiplier = self._cached_volume_multiplier(name)
-            self._queue_volume_multiplier_compute(name)
             self._current_playback_path = path
             self._song_len_ms = self._cached_duration_ms(name)
             pygame.mixer.music.load(path)
@@ -4836,6 +4842,7 @@ class Player:
             self._apply_volume(force=True)
             self.current = name
             self._play_start = time.monotonic()
+            self._queue_volume_multiplier_compute(name)
         except Exception as exc:
             self.current = "None"
             self._song_len_ms = 0
@@ -4886,7 +4893,6 @@ class Player:
             pass
         try:
             self._current_volume_multiplier = self._cached_volume_multiplier(name)
-            self._queue_volume_multiplier_compute(name)
             self._current_playback_path = path
             self._song_len_ms = self._cached_duration_ms(name)
             pygame.mixer.music.load(path)
@@ -4895,6 +4901,7 @@ class Player:
             self._apply_volume(force=True)
             self.current = name
             self._play_start = time.monotonic()
+            self._queue_volume_multiplier_compute(name)
         except Exception as exc:
             self.current = "None"
             self._song_len_ms = 0
@@ -8241,7 +8248,10 @@ if TEXTUAL_AVAILABLE:
                 self.notify(f"Audio initialization failed: {exc}", severity="error")
                 self.exit(message=str(exc))
                 return
-            self.player._ui_wakeup = lambda: self.call_from_thread(self.refresh_ui)
+            # Background completion events need their pending actions handled
+            # immediately; waiting for the next periodic tick adds silence
+            # between tracks. tick() still performs the lightweight refresh.
+            self.player._ui_wakeup = lambda: self.call_from_thread(self.tick)
             self.player._ui_notify = self.notify
             table = self.query_one("#table", DataTable)
             self._configure_table_columns(False)

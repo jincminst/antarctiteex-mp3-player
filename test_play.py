@@ -809,12 +809,14 @@ class PureHelperTests(unittest.TestCase):
         player._all_songs_set = {"song"}
         player._volume_multiplier_pending = set()
         player._volume_multiplier_lock = TrackingLock()
+        player._volume_analysis_lock = TrackingLock()
         player._stored_volume_multiplier = mock.Mock(return_value=None)
         player.current = "None"
         player._needs_redraw_hdr = False
+        compute_queue_lock_states = []
 
         def compute(_name):
-            self.assertFalse(player._volume_multiplier_lock.inside)
+            compute_queue_lock_states.append(player._volume_multiplier_lock.inside)
             return 1.0
 
         player._compute_volume_multiplier = compute
@@ -823,7 +825,37 @@ class PureHelperTests(unittest.TestCase):
             mock.patch.object(play.threading, "Thread", ImmediateThread),
         ):
             player._queue_volume_multiplier_compute("song")
+        self.assertEqual(compute_queue_lock_states, [False])
         self.assertEqual(player._volume_multiplier_pending, set())
+
+    def test_finished_shuffle_track_wakes_ui_for_immediate_handoff(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.current = "finished"
+        player.paused = False
+        player._youtube_temp_path = None
+        player._song_len_ms = 1000
+        player.play_mode = "shuffle"
+        player._playback_id = 1
+        player._completion_suppressed_until = 0
+        player._pending_shuffle_next = None
+        player.play_pool = ["next"]
+        player._queue_play_inc = mock.Mock()
+        player._weighted_shuffle_choice = mock.Mock(return_value="next")
+        player._wake_ui = mock.Mock(
+            side_effect=lambda: setattr(player, "running", False)
+        )
+
+        with (
+            mock.patch.object(play.time, "sleep"),
+            mock.patch.object(play.time, "monotonic", return_value=10),
+            mock.patch.object(play.pygame.mixer.music, "get_busy", return_value=False),
+        ):
+            player._watch_playback()
+
+        self.assertEqual(player._pending_shuffle_next, "next")
+        player._wake_ui.assert_called_once_with()
 
     def test_text_editor_navigation_deletion_and_kill_yank(self):
         player = bare_player()
