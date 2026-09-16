@@ -1636,27 +1636,52 @@ class Player:
         value = unicodedata.normalize("NFKD", str(value or "")).casefold()
         return " ".join(re.findall(r"[a-z0-9]+", value))
 
+    @staticmethod
+    def _lyrics_title_variants(title):
+        """Try the usual missing vowels in a censored word such as b-tch."""
+        title = str(title or "").strip()
+        variants = [title]
+        censored = re.search(r"\b([A-Za-z])[-*]([A-Za-z]{2,5})\b", title)
+        if censored:
+            for vowel in "iueao":
+                expanded = (
+                    title[:censored.start()]
+                    + censored.group(1) + vowel + censored.group(2)
+                    + title[censored.end():]
+                )
+                if expanded not in variants:
+                    variants.append(expanded)
+        return variants
+
     @classmethod
     def _genius_title_score(cls, candidate, wanted):
         """Score a Genius title without confusing translations for originals."""
         candidate = cls._normalized_lyrics_identity(candidate)
-        wanted = cls._normalized_lyrics_identity(wanted)
-        if not candidate or not wanted:
+        wanted_variants = [
+            cls._normalized_lyrics_identity(variant)
+            for variant in cls._lyrics_title_variants(wanted)
+        ]
+        if not candidate or not any(wanted_variants):
             return 0
-        if candidate == wanted:
+        # Treat hyphens between words as optional: "all-american" and
+        # "all american" are the same title for matching purposes.
+        if candidate.replace(" ", "") in {
+            variant.replace(" ", "") for variant in wanted_variants
+        }:
             return 100
 
         extra_version = re.compile(
             r"\b(?:romanized|translation|translated|live|remix|edit|remaster(?:ed)?|"
             r"instrumental|karaoke|demo|acoustic|sped up|slowed)\b"
         )
-        if candidate.startswith(wanted + " "):
-            suffix = candidate[len(wanted):].strip()
-            if extra_version.search(suffix):
-                return 0
-            # Genius sometimes includes a featured artist in the result title.
-            if suffix.startswith(("feat ", "featuring ", "ft ")):
-                return 90
+        for wanted_variant in wanted_variants:
+            if candidate.startswith(wanted_variant + " "):
+                suffix = candidate[len(wanted_variant):].strip()
+                if extra_version.search(suffix):
+                    return 0
+                # Genius sometimes includes a featured artist in the title.
+                if suffix.startswith(("feat ", "featuring ", "ft ")):
+                    return 90
         return 0
 
     @staticmethod
@@ -1804,37 +1829,42 @@ class Player:
                 query_artists.append(artist)
 
         candidates = {}
-        for query_artist in query_artists:
-            query = urllib.parse.urlencode({"q": f"{title} {query_artist}"})
-            try:
-                payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
-            except Exception:
-                break
-            response = payload.get("response", {})
-            hits = list(response.get("hits", []))
-            for section in response.get("sections", []):
-                if isinstance(section, dict) and section.get("type") == "song":
-                    hits.extend(section.get("hits", []))
-            for hit in hits if isinstance(hits, list) else []:
-                result = hit.get("result", {}) if isinstance(hit, dict) else {}
-                page_url = str(result.get("url") or "").strip()
-                artist = str(result.get("primary_artist", {}).get("name", ""))
-                candidate_title = str(
-                    result.get("title") or result.get("full_title") or ""
-                )
-                title_score = self._genius_title_score(candidate_title, title)
-                artist_exact = (
-                    self._normalized_lyrics_identity(artist)
-                    == self._normalized_lyrics_identity(known_artist)
-                ) if known_artist else False
-                artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
-                if not page_url or not title_score or not (artist_exact or artist_tag_match):
-                    continue
-                score = title_score + (50 if artist_exact else 35)
-                previous = candidates.get(page_url)
-                if previous is None or score > previous[0]:
-                    candidates[page_url] = (score, result)
-            if candidates:
+        search_failed = False
+        for query_title in self._lyrics_title_variants(title):
+            for query_artist in query_artists:
+                query = urllib.parse.urlencode({"q": f"{query_title} {query_artist}"})
+                try:
+                    payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+                except Exception:
+                    search_failed = True
+                    break
+                response = payload.get("response", {})
+                hits = list(response.get("hits", []))
+                for section in response.get("sections", []):
+                    if isinstance(section, dict) and section.get("type") == "song":
+                        hits.extend(section.get("hits", []))
+                for hit in hits if isinstance(hits, list) else []:
+                    result = hit.get("result", {}) if isinstance(hit, dict) else {}
+                    page_url = str(result.get("url") or "").strip()
+                    artist = str(result.get("primary_artist", {}).get("name", ""))
+                    candidate_title = str(
+                        result.get("title") or result.get("full_title") or ""
+                    )
+                    title_score = self._genius_title_score(candidate_title, title)
+                    artist_exact = (
+                        self._normalized_lyrics_identity(artist)
+                        == self._normalized_lyrics_identity(known_artist)
+                    ) if known_artist else False
+                    artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
+                    if not page_url or not title_score or not (artist_exact or artist_tag_match):
+                        continue
+                    score = title_score + (50 if artist_exact else 35)
+                    previous = candidates.get(page_url)
+                    if previous is None or score > previous[0]:
+                        candidates[page_url] = (score, result)
+                if candidates:
+                    break
+            if candidates or search_failed:
                 break
 
         for page_url, (_score, _result) in sorted(
@@ -1877,6 +1907,7 @@ class Player:
             metadata.get("library_name", self.lyrics_song)
         )
         result = None
+        last_error = None
         params = {"track_name": title}
         if artist:
             params["artist_name"] = artist
@@ -1891,9 +1922,22 @@ class Player:
                 result = self._fetch_json(exact_url)
             except urllib.error.HTTPError as exc:
                 if exc.code != 404:
-                    raise
+                    last_error = exc
+            except Exception as exc:
+                last_error = exc
         if result is None:
             results = []
+            artist_tag = metadata.get("artist_tag") or artist
+
+            def artist_matches(item):
+                found_artist = item.get("artistName", "")
+                return bool(artist) and (
+                    self._normalized_lyrics_identity(found_artist)
+                    == self._normalized_lyrics_identity(artist)
+                    or bool(artist_tag)
+                    and self._artist_matches_tag(found_artist, artist_tag)
+                )
+
             searches = [{"track_name": title}]
             if artist:
                 searches.insert(
@@ -1901,23 +1945,50 @@ class Player:
                 )
             for search in searches:
                 search_params = urllib.parse.urlencode(search)
-                found = self._fetch_json(
-                    f"{LYRICS_API_URL}/search?{search_params}"
-                )
+                try:
+                    found = self._fetch_json(
+                        f"{LYRICS_API_URL}/search?{search_params}"
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    continue
                 if isinstance(found, list) and found:
-                    results = found
-                    break
+                    results.extend(item for item in found if isinstance(item, dict))
+                    if not artist or any(
+                        self._genius_title_score(item.get("trackName", ""), title)
+                        and artist_matches(item)
+                        for item in results
+                    ):
+                        break
             if not results:
+                if last_error:
+                    raise last_error
                 return None
-            exact_title = [
+            candidates = [
                 item for item in results
-                if str(item.get("trackName", "")).casefold() == title.casefold()
+                if isinstance(item, dict)
+                and self._genius_title_score(item.get("trackName", ""), title)
             ]
-            exact_artist = [
-                item for item in exact_title
-                if str(item.get("artistName", "")).casefold() == artist.casefold()
-            ]
-            candidates = exact_artist or exact_title or results
+            if not candidates:
+                return None
+            matched_artist = [item for item in candidates if artist_matches(item)]
+            if artist and matched_artist:
+                candidates = matched_artist
+            elif artist:
+                # Some user tags (for example 21P) are aliases rather than
+                # initials. A close duration can still disambiguate the song.
+                if duration_ms <= 0:
+                    return None
+                target_seconds = duration_ms / 1000
+                candidates = [
+                    item for item in candidates
+                    if abs(
+                        float(item.get("duration", -1000) or -1000)
+                        - target_seconds
+                    ) <= 5
+                ]
+                if not candidates:
+                    return None
             if duration_ms > 0:
                 target_seconds = duration_ms / 1000
                 candidates.sort(
@@ -1953,7 +2024,7 @@ class Player:
             self.lyrics_source_url = ""
             self._lyrics_loading = False
             return
-        if name == self.lyrics_song and (self._lyrics_loading or self.lyrics_status):
+        if name == self.lyrics_song and (self._lyrics_loading or self.lyrics_text):
             return
         self._lyrics_request_id += 1
         request_id = self._lyrics_request_id
@@ -2012,11 +2083,21 @@ class Player:
             self._meta_dirty = True
         else:
             self.lyrics_status = (
-                "Lyrics unavailable. Add artist and title tags, or name the file\n"
-                "[Artist] Song Title.mp3."
+                "Lyrics not found for this song. Check its title and artist tags."
             )
             if error:
-                self.lyrics_status += "\n\nThe lyrics service could not be reached."
+                if isinstance(error, urllib.error.HTTPError):
+                    self.lyrics_status = (
+                        f"Lyrics provider returned HTTP {error.code}. "
+                        "Try this song again later."
+                    )
+                elif isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError)):
+                    self.lyrics_status = (
+                        "Could not connect to the lyrics provider. "
+                        "Check your connection and try again."
+                    )
+                else:
+                    self.lyrics_status = "Lyrics lookup failed. Try this song again."
         self._wake_ui()
 
     @staticmethod

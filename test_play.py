@@ -1180,6 +1180,44 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(score("vampire (Spanish Translation)", "vampire"), 0)
         self.assertEqual(score("vampire Remix", "vampire"), 0)
         self.assertEqual(score("vampire diaries", "vampire"), 0)
+        self.assertEqual(score("all-american bitch", "all american b-tch"), 100)
+
+    def test_genius_retries_censored_title_with_verified_artist(self):
+        player = play.Player.__new__(play.Player)
+        search = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": "all-american bitch",
+                "url": "https://genius.com/Olivia-rodrigo-all-american-bitch-lyrics",
+                "primary_artist": {"name": "Olivia Rodrigo"},
+            },
+        }]}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.object(player, "_fetch_json", side_effect=[
+                {"response": {"sections": []}}, search,
+            ]) as fetch,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "OR", "artist_tag": "OR",
+                "title": "all american b-tch",
+            })
+        self.assertEqual(fetch.call_count, 2)
+        self.assertIn("bitch+OR", fetch.call_args.args[0])
+        self.assertEqual(result["source"], "Genius")
+        self.assertEqual(result["text"], "[Verse 1]\nWords")
+
+    def test_genius_outage_does_not_retry_every_censored_variant(self):
+        player = play.Player.__new__(play.Player)
+        with mock.patch.object(
+            player, "_fetch_json", side_effect=TimeoutError("timed out")
+        ) as fetch:
+            result = player._fetch_genius_lyrics({
+                "artist": "OR", "artist_tag": "OR",
+                "title": "all american b-tch",
+            })
+        self.assertIsNone(result)
+        fetch.assert_called_once()
 
     def test_genius_result_wins_when_artist_initials_match_tag(self):
         player = play.Player.__new__(play.Player)
@@ -1374,6 +1412,60 @@ class LyricsTests(unittest.TestCase):
 
         self.assertEqual(result["text"], "[Verse 1]\nCorrect")
         self.assertEqual(fetch.call_count, 3)
+
+    def test_lrclib_retries_after_http_503_and_matches_censored_title(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "[OR] all american b-tch"
+        unavailable = play.urllib.error.HTTPError(
+            "https://lrclib.net/api/get", 503, "Service Unavailable", {}, None
+        )
+        results = [{
+            "trackName": "all-american b*tch",
+            "artistName": "Olivia Rodrigo",
+            "duration": 164,
+            "plainLyrics": "[Verse 1]\nWords",
+        }]
+        with (
+            mock.patch.object(player, "_cached_duration_ms", return_value=164_000),
+            mock.patch.object(player, "_fetch_json", side_effect=[
+                unavailable, unavailable, results,
+            ]) as fetch,
+        ):
+            result = player._fetch_lrclib_lyrics({
+                "artist": "OR", "artist_tag": "OR",
+                "title": "all american b-tch", "album": "",
+            })
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(result["text"], "[Verse 1]\nWords")
+
+    def test_lyrics_error_names_http_failure_instead_of_network_failure(self):
+        player = play.Player.__new__(play.Player)
+        player._lyrics_request_id = 1
+        player.lyrics_song = "[OR] all american b-tch"
+        player._lyrics_loading = True
+        player._wake_ui = lambda: None
+        error = play.urllib.error.HTTPError(
+            "https://lrclib.net/api/search", 503, "Service Unavailable", {}, None
+        )
+        player._finish_lyrics_request(1, player.lyrics_song, None, error)
+        self.assertIn("HTTP 503", player.lyrics_status)
+        self.assertNotIn("could not be reached", player.lyrics_status)
+
+    def test_failed_lyrics_lookup_can_retry_same_song(self):
+        player = play.Player.__new__(play.Player)
+        player._all_songs_set = {"[OR] all american b-tch"}
+        player.lyrics_song = "[OR] all american b-tch"
+        player.lyrics_status = "Lyrics provider returned HTTP 503."
+        player.lyrics_text = ""
+        player._lyrics_loading = False
+        player._lyrics_request_id = 1
+        player._lyrics_memory_cache = {}
+        player.meta = {}
+        with mock.patch.object(play.threading, "Thread") as thread:
+            player.request_lyrics(player.lyrics_song)
+        self.assertEqual(player._lyrics_request_id, 2)
+        self.assertTrue(player._lyrics_loading)
+        thread.return_value.start.assert_called_once()
 
 
 @unittest.skipUnless(play.TEXTUAL_AVAILABLE, "Textual is not installed")
