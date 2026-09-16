@@ -5,6 +5,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 ## Features
 
 - Local MP3 Playback
+- Automatic Lyrics Sidebar with Embedded-Tag and LRCLIB Lookup
 - Library Search and Filtering
 - Playlist Creation, Renaming, and Deletion
 - Automatic Artist-Tag Playlists with Manual Drag-and-Drop Fallback
@@ -59,6 +60,19 @@ The `mp3-player` command is also available as an alias.
 
 The player stores song metadata, playlists, settings, and analysis in a single
 `.mp3cache.json` file inside the selected music folder.
+
+## Lyrics
+
+Starting a local song opens a scrollable lyrics sidebar on the right. The
+player first uses lyrics embedded in the MP3, then queries LRCLIB in the
+background. Successful results are saved in `.mp3cache.json`, so replaying a
+song does not make another network request. Section headings supplied by the
+source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain visible.
+
+Accurate artist and title metadata gives the best matches. The player reads
+MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or
+`Artist - Song Title.mp3`. You can close the sidebar with its `×` button; it
+opens again when another song starts.
 
 ## Artist Tags and Automatic Playlists
 

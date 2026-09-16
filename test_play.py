@@ -1120,6 +1120,86 @@ class PureHelperTests(unittest.TestCase):
         self.assertGreater(weights["a"], weights["c"])
 
 
+class LyricsTests(unittest.TestCase):
+    def test_filename_metadata_prefers_artist_tag_then_dash_format(self):
+        self.assertEqual(
+            play.Player._lyrics_metadata_from_filename("[OR] vampire"),
+            ("OR", "vampire"),
+        )
+        self.assertEqual(
+            play.Player._lyrics_metadata_from_filename("Olivia Rodrigo - vampire"),
+            ("Olivia Rodrigo", "vampire"),
+        )
+        self.assertEqual(
+            play.Player._lyrics_metadata_from_filename("vampire"),
+            ("", "vampire"),
+        )
+
+    def test_lyrics_cleanup_strips_timestamps_and_preserves_sections(self):
+        cleaned = play.Player._clean_lyrics_text(
+            "[ar:Artist]\n[00:01.20](Verse 1)\n[00:02.00]First line\n\n"
+            "[00:04.00][Chorus]\n[00:05.00]Hook"
+        )
+        self.assertEqual(cleaned, "[Verse 1]\nFirst line\n\n[Chorus]\nHook")
+
+    def test_stale_lyrics_result_cannot_replace_new_song(self):
+        player = play.Player.__new__(play.Player)
+        player._lyrics_request_id = 2
+        player.lyrics_song = "New"
+        player._lyrics_loading = True
+        player.lyrics_text = ""
+        player.lyrics_source = ""
+        player.lyrics_source_url = ""
+        player.lyrics_status = "Finding lyrics…"
+        player._lyrics_memory_cache = {}
+
+        player._finish_lyrics_request(
+            1, "Old", {"text": "Old words", "source": "LRCLIB"}
+        )
+
+        self.assertEqual(player.lyrics_song, "New")
+        self.assertEqual(player.lyrics_text, "")
+        self.assertTrue(player._lyrics_loading)
+
+    def test_lrclib_falls_back_from_artist_alias_to_title_and_duration(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "[21P] Stressed Out"
+        not_found = play.urllib.error.HTTPError(
+            "https://lrclib.net/api/get", 404, "Not Found", {}, None
+        )
+        results = [
+            {
+                "trackName": "Stressed Out",
+                "artistName": "Wrong Artist",
+                "duration": 300,
+                "plainLyrics": "Wrong",
+            },
+            {
+                "trackName": "Stressed Out",
+                "artistName": "Twenty One Pilots",
+                "duration": 202,
+                "plainLyrics": "[Verse 1]\nCorrect",
+            },
+        ]
+        with (
+            mock.patch.object(player, "_cached_duration_ms", return_value=202_000),
+            mock.patch.object(
+                player, "_fetch_json", side_effect=[not_found, [], results]
+            ) as fetch,
+        ):
+            result = player._fetch_lrclib_lyrics(
+                {
+                    "artist": "21P",
+                    "title": "Stressed Out",
+                    "album": "",
+                    "library_name": "[21P] Stressed Out",
+                }
+            )
+
+        self.assertEqual(result["text"], "[Verse 1]\nCorrect")
+        self.assertEqual(fetch.call_count, 3)
+
+
 @unittest.skipUnless(play.TEXTUAL_AVAILABLE, "Textual is not installed")
 class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
@@ -1153,6 +1233,38 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
 
                     transport.assert_called_once_with()
                     refresh_ui.assert_not_called()
+
+    async def test_lyrics_sidebar_opens_for_playback_and_can_be_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "[OR] vampire.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    player = app.player
+
+                    def provide_lyrics(name):
+                        player.lyrics_song = name
+                        player.lyrics_status = ""
+                        player.lyrics_text = "[Verse 1]\nWords"
+                        player.lyrics_source = "MP3 tags"
+                        player.lyrics_source_url = ""
+
+                    player.current = "[OR] vampire"
+                    player._playback_id += 1
+                    with mock.patch.object(
+                        player, "request_lyrics", side_effect=provide_lyrics
+                    ) as request:
+                        app.refresh_ui()
+                        await pilot.pause()
+
+                    request.assert_called_once_with("[OR] vampire")
+                    self.assertTrue(app.query_one("#workspace").has_class("lyrics-open"))
+                    self.assertIn(
+                        "[Verse 1]", str(app.query_one("#lyrics-content").render())
+                    )
+                    await pilot.click("#lyrics-close")
+                    await pilot.pause()
+                    self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
 
     async def test_modals_and_main_layout_survive_extreme_resizes(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -13,6 +13,8 @@ import traceback
 import tempfile
 import textwrap
 import urllib.parse
+import urllib.error
+import urllib.request
 import unicodedata
 from types import SimpleNamespace
 from collections import deque
@@ -121,6 +123,8 @@ YT_DOWNLOAD_FORMAT = "ba/b"
 YT_STATS_WORKERS = 3
 YT_SEARCH_RESULT_LIMIT = 75
 YT_SEARCH_CHANNEL_LIMIT = 8
+LYRICS_API_URL = "https://lrclib.net/api"
+LYRICS_HTTP_TIMEOUT_S = 8
 APPLE_RADIO_STATIONS = (
     {
         "name": "Apple Music 1",
@@ -301,6 +305,15 @@ class Player:
         self.youtube_download_progress = None
         self._pending_preview_cleanup = False
         self._text_kill_ring = ""
+
+        self.lyrics_song = ""
+        self.lyrics_status = ""
+        self.lyrics_text = ""
+        self.lyrics_source = ""
+        self.lyrics_source_url = ""
+        self._lyrics_loading = False
+        self._lyrics_request_id = 0
+        self._lyrics_memory_cache = {}
 
         self._youtube_loading = False
         self._youtube_request_id = 0
@@ -1540,6 +1553,255 @@ class Player:
 
     def _song_path(self, name):
         return os.path.join(self.folder, name + ".mp3")
+
+    @staticmethod
+    def _lyrics_metadata_from_filename(name):
+        """Return an artist/title fallback from the library filename."""
+        label = str(name or "").strip()
+        tagged = re.match(r"^\[([^\]]+)\]\s*(.+)$", label)
+        if tagged:
+            return tagged.group(1).strip(), tagged.group(2).strip()
+        if " - " in label:
+            artist, title = label.split(" - ", 1)
+            if artist.strip() and title.strip():
+                return artist.strip(), title.strip()
+        return "", label
+
+    @staticmethod
+    def _clean_lyrics_text(value):
+        """Normalize provider text while retaining its section headings."""
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        # Convert synced LRC to readable lyrics. Metadata lines such as [ar:]
+        # are omitted, while structural labels such as [Chorus] remain.
+        lines = []
+        for raw_line in text.splitlines():
+            line = re.sub(
+                r"^(?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\])+\s*",
+                "",
+                raw_line,
+            )
+            if re.match(r"^\[(?:ar|al|ti|by|offset|length|re):", line, re.I):
+                continue
+            line = re.sub(
+                r"^\((verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|intro|outro|refrain|hook)([^)]*)\)$",
+                lambda match: f"[{match.group(1).title()}{match.group(2)}]",
+                line.strip(),
+                flags=re.I,
+            )
+            lines.append(line.rstrip())
+        while lines and not lines[0]:
+            lines.pop(0)
+        while lines and not lines[-1]:
+            lines.pop()
+        compact = []
+        for line in lines:
+            if line or not compact or compact[-1]:
+                compact.append(line)
+        return "\n".join(compact).strip()
+
+    def _read_audio_lyrics_metadata(self, name):
+        """Read embedded song identity and lyrics without another dependency."""
+        artist, title = self._lyrics_metadata_from_filename(name)
+        metadata = {"artist": artist, "title": title, "album": "", "lyrics": ""}
+        path = self._song_path(name)
+        if not shutil.which("ffprobe") or not os.path.exists(path):
+            return metadata
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error", "-show_entries", "format_tags",
+                    "-of", "json", path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            payload = json.loads(proc.stdout or "{}")
+            tags = payload.get("format", {}).get("tags", {})
+            if not isinstance(tags, dict):
+                return metadata
+            lowered = {str(key).casefold(): value for key, value in tags.items()}
+            metadata["artist"] = str(lowered.get("artist") or artist).strip()
+            metadata["title"] = str(lowered.get("title") or title).strip()
+            metadata["album"] = str(lowered.get("album") or "").strip()
+            for key, value in lowered.items():
+                if key in {
+                    "lyrics", "unsyncedlyrics", "syncedlyrics"
+                } or key.startswith("lyrics-"):
+                    cleaned = self._clean_lyrics_text(value)
+                    if cleaned:
+                        metadata["lyrics"] = cleaned
+                        break
+        except Exception:
+            pass
+        return metadata
+
+    @staticmethod
+    def _fetch_json(url):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "antarctiteex-mp3-player/0.1 (+https://github.com/jincminst/antarctiteex-mp3-player)",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=LYRICS_HTTP_TIMEOUT_S) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _fetch_lrclib_lyrics(self, metadata):
+        artist = metadata.get("artist", "").strip()
+        title = metadata.get("title", "").strip()
+        if not title:
+            return None
+        duration_ms = self._cached_duration_ms(
+            metadata.get("library_name", self.lyrics_song)
+        )
+        result = None
+        params = {"track_name": title}
+        if artist:
+            params["artist_name"] = artist
+        album = metadata.get("album", "").strip()
+        if album:
+            params["album_name"] = album
+        if duration_ms > 0:
+            params["duration"] = str(round(duration_ms / 1000))
+        if artist:
+            exact_url = f"{LYRICS_API_URL}/get?{urllib.parse.urlencode(params)}"
+            try:
+                result = self._fetch_json(exact_url)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    raise
+        if result is None:
+            results = []
+            searches = [{"track_name": title}]
+            if artist:
+                searches.insert(
+                    0, {"track_name": title, "artist_name": artist}
+                )
+            for search in searches:
+                search_params = urllib.parse.urlencode(search)
+                found = self._fetch_json(
+                    f"{LYRICS_API_URL}/search?{search_params}"
+                )
+                if isinstance(found, list) and found:
+                    results = found
+                    break
+            if not results:
+                return None
+            exact_title = [
+                item for item in results
+                if str(item.get("trackName", "")).casefold() == title.casefold()
+            ]
+            exact_artist = [
+                item for item in exact_title
+                if str(item.get("artistName", "")).casefold() == artist.casefold()
+            ]
+            candidates = exact_artist or exact_title or results
+            if duration_ms > 0:
+                target_seconds = duration_ms / 1000
+                candidates.sort(
+                    key=lambda item: abs(
+                        float(item.get("duration", target_seconds) or target_seconds)
+                        - target_seconds
+                    )
+                )
+            result = candidates[0]
+        if not isinstance(result, dict):
+            return None
+        if result.get("instrumental"):
+            return {
+                "text": "[Instrumental]",
+                "source": "LRCLIB",
+                "url": "https://lrclib.net",
+            }
+        lyrics = self._clean_lyrics_text(
+            result.get("plainLyrics") or result.get("syncedLyrics") or ""
+        )
+        if not lyrics:
+            return None
+        return {"text": lyrics, "source": "LRCLIB", "url": "https://lrclib.net"}
+
+    def request_lyrics(self, name):
+        """Load lyrics for a local song asynchronously, preferring MP3 tags."""
+        if not name or name not in self._all_songs_set:
+            self._lyrics_request_id += 1
+            self.lyrics_song = ""
+            self.lyrics_status = ""
+            self.lyrics_text = ""
+            self.lyrics_source = ""
+            self.lyrics_source_url = ""
+            self._lyrics_loading = False
+            return
+        if name == self.lyrics_song and (self._lyrics_loading or self.lyrics_status):
+            return
+        self._lyrics_request_id += 1
+        request_id = self._lyrics_request_id
+        self.lyrics_song = name
+        self.lyrics_status = "Finding lyrics…"
+        self.lyrics_text = ""
+        self.lyrics_source = ""
+        self.lyrics_source_url = ""
+        self._lyrics_loading = True
+
+        cached = self._lyrics_memory_cache.get(name)
+        entry = self.meta.get(name, {})
+        if not cached and isinstance(entry, dict):
+            saved = entry.get("lyrics_cache")
+            if isinstance(saved, dict) and saved.get("text"):
+                cached = saved
+        if cached:
+            self._finish_lyrics_request(request_id, name, cached)
+            return
+
+        def worker():
+            result = None
+            error = ""
+            try:
+                metadata = self._read_audio_lyrics_metadata(name)
+                metadata["library_name"] = name
+                if metadata.get("lyrics"):
+                    result = {
+                        "text": metadata["lyrics"],
+                        "source": "MP3 tags",
+                        "url": "",
+                    }
+                else:
+                    result = self._fetch_lrclib_lyrics(metadata)
+            except Exception as exc:
+                error = str(exc)
+            self._finish_lyrics_request(request_id, name, result, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_lyrics_request(self, request_id, name, result, error=""):
+        if request_id != self._lyrics_request_id or name != self.lyrics_song:
+            return
+        self._lyrics_loading = False
+        if result and result.get("text"):
+            result = {
+                "text": self._clean_lyrics_text(result.get("text")),
+                "source": str(result.get("source") or "Lyrics"),
+                "url": str(result.get("url") or ""),
+            }
+            self._lyrics_memory_cache[name] = result
+            self.lyrics_text = result["text"]
+            self.lyrics_source = result["source"]
+            self.lyrics_source_url = result["url"]
+            self.lyrics_status = ""
+            entry = self._meta_dict(name)
+            entry["lyrics_cache"] = result
+            self._meta_dirty = True
+        else:
+            self.lyrics_status = (
+                "Lyrics unavailable. Add artist and title tags, or name the file\n"
+                "[Artist] Song Title.mp3."
+            )
+            if error:
+                self.lyrics_status += "\n\nThe lyrics service could not be reached."
+        self._wake_ui()
 
     @staticmethod
     def _volume_multiplier_from_peak(max_db):
@@ -8125,6 +8387,15 @@ if TEXTUAL_AVAILABLE:
         #playlist-buttons Button.drop-target { background: #dbeafe; color: #111111; text-style: bold; }
         #playlist-buttons Button.new-playlist-link { color: #555555; text-style: underline; margin-top: 1; }
         #library { width: 1fr; border: solid #777777; border-left: none; }
+        #lyrics-panel { display: none; width: 34; min-width: 26; border: solid #777777; border-left: none; background: #fafaf7; }
+        #workspace.lyrics-open #lyrics-panel { display: block; }
+        #lyrics-header { height: 3; padding-left: 1; border-bottom: solid #777777; align-vertical: middle; }
+        #lyrics-heading { width: 1fr; height: 3; content-align: left middle; text-style: bold; }
+        #lyrics-close { width: 5; min-width: 5; max-width: 5; height: 3; padding: 0; border: none; content-align: center middle; }
+        #lyrics-track { height: auto; max-height: 4; padding: 1 1 0 1; text-style: bold; }
+        #lyrics-source { height: 2; padding: 0 1; color: #777777; }
+        #lyrics-scroll { height: 1fr; padding: 0 1 1 1; scrollbar-size: 1 1; }
+        #lyrics-content { width: 100%; height: auto; }
         #workspace.youtube #playlists { display: none; }
         #workspace.youtube #playlist-resizer { display: none; }
         #workspace.youtube #library { border-left: solid #777777; }
@@ -8157,6 +8428,7 @@ if TEXTUAL_AVAILABLE:
         }
         Screen.narrow #workspace { padding: 0; }
         Screen.narrow #playlists { width: 14; min-width: 14; }
+        Screen.narrow #lyrics-panel { width: 29; min-width: 24; }
         Screen.narrow #top { padding: 0 1; }
         Screen.tiny #playlists { display: none; }
         Screen.tiny #playlist-resizer { display: none; }
@@ -8192,6 +8464,8 @@ if TEXTUAL_AVAILABLE:
             self._drag_songs = []
             self._drag_target_playlist = None
             self._drag_badge_width = 8
+            self._lyrics_token = None
+            self._lyrics_dismissed_token = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="top"):
@@ -8238,6 +8512,14 @@ if TEXTUAL_AVAILABLE:
                         yield Button("Apple Radio", id="apple-radio")
                         yield Button("YT Preview", id="yt-preview")
                         yield Button("Cancel", id="cancel")
+                with Vertical(id="lyrics-panel"):
+                    with Horizontal(id="lyrics-header"):
+                        yield Static("LYRICS", id="lyrics-heading")
+                        yield Button("×", id="lyrics-close")
+                    yield Static("", id="lyrics-track")
+                    yield Static("", id="lyrics-source")
+                    with VerticalScroll(id="lyrics-scroll"):
+                        yield Static("Finding lyrics…", id="lyrics-content")
             yield Static("", id="drag-badge")
 
         def on_mount(self):
@@ -8493,6 +8775,7 @@ if TEXTUAL_AVAILABLE:
             self.player._process_pending()
             self.player._queue_apple_radio_poll()
             self.player._save_session_if_due()
+            self._sync_lyrics_panel()
             duration_updates = self.player._take_duration_ui_updates()
             if self.player.dirty:
                 self.refresh_ui(rebuild_table=True)
@@ -8501,6 +8784,38 @@ if TEXTUAL_AVAILABLE:
                 # and layout refresh. This callback runs once per second.
                 self.refresh_transport()
                 self._refresh_duration_cells(duration_updates)
+
+        def _sync_lyrics_panel(self):
+            """Open and update the right sidebar for the current local song."""
+            p = self.player
+            if not p:
+                return
+            name = p.current if p.current in p._all_songs_set else ""
+            token = (name, p._playback_id) if name else None
+            workspace = self.query_one("#workspace", Horizontal)
+            if token != self._lyrics_token:
+                self._lyrics_token = token
+                self._lyrics_dismissed_token = None
+                p.request_lyrics(name)
+                self.call_after_refresh(self._refit_resized_table)
+            visible = token is not None and token != self._lyrics_dismissed_token
+            workspace.set_class(visible, "lyrics-open")
+            if not visible:
+                return
+            self.query_one("#lyrics-track", Static).update(Text(name))
+            source = Text()
+            if p.lyrics_source:
+                source.append("Source: ")
+                if p.lyrics_source_url:
+                    source.append(
+                        p.lyrics_source,
+                        style=f"underline link {p.lyrics_source_url}",
+                    )
+                else:
+                    source.append(p.lyrics_source)
+            self.query_one("#lyrics-source", Static).update(source)
+            content = p.lyrics_text or p.lyrics_status or "Finding lyrics…"
+            self.query_one("#lyrics-content", Static).update(Text(content))
 
         def _refresh_duration_cells(self, names):
             if not names:
@@ -8653,6 +8968,7 @@ if TEXTUAL_AVAILABLE:
             p = self.player
             if not p:
                 return
+            self._sync_lyrics_panel()
             self._sync_playlist_source_highlight()
             if self.editor_mode == "search":
                 self.query_one("#query", Input).placeholder = (
@@ -9162,6 +9478,10 @@ if TEXTUAL_AVAILABLE:
                 p._refresh_library()
                 self.refresh_playlists()
                 self.refresh_ui(rebuild_table=True)
+            elif button_id == "lyrics-close":
+                self._lyrics_dismissed_token = self._lyrics_token
+                self.query_one("#workspace", Horizontal).remove_class("lyrics-open")
+                self.call_after_refresh(self._refit_resized_table)
             elif button_id == "help-link":
                 self.action_show_help()
             elif button_id == "apple-radio":
