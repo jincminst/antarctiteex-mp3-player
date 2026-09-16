@@ -73,7 +73,7 @@ public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
 visible. Lyrics are censored with better-profanity, including disguised words
-such as `s*x` and `s✱x`; "hell" stays visible.
+such as `s*x`, `s✱x`, and `s*xy`; "hell" stays visible.
 Drag the sidebar's left edge to resize it.
 
 Accurate artist and title metadata gives the best matches. The player reads

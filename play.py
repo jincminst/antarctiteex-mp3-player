@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from better_profanity import profanity
 
 profanity.load_censor_words(whitelist_words=["hell"])
+profanity.add_censor_words(["sexy", "sexier", "sexiest", "sexiness", "sexting"])
 
 _MASKED_WORD = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[\*✱✲✳✴✵✶✷✸✹✺✻✼✽✾•·_\-–—!]+)+[A-Za-z0-9]+(?![A-Za-z0-9])"
@@ -37,13 +38,11 @@ _MASKED_LETTERS = str.maketrans({
 
 def _censor_lyrics_text(value):
     """Mask profanity, including common lyric spellings with substitute glyphs."""
-    text = profanity.censor(value)
-
     def censor_masked(match):
         normalized = match.group().translate(_MASKED_LETTERS)
         return "****" if profanity.censor(normalized) == "****" else match.group()
 
-    return _MASKED_WORD.sub(censor_masked, text)
+    return profanity.censor(_MASKED_WORD.sub(censor_masked, value))
 
 try:
     from rich.cells import cell_len, set_cell_size
