@@ -8863,6 +8863,7 @@ if TEXTUAL_AVAILABLE:
         #library { width: 1fr; border: solid #777777; border-left: none; }
         #lyrics-resizer { display: none; width: 1; min-width: 1; height: 1fr; }
         #lyrics-panel { display: none; width: 34; min-width: 8; border: solid #777777; border-left: none; background: #fafaf7; }
+        #workspace.lyrics-open #library { border-right: none; }
         #workspace.lyrics-open #lyrics-resizer { display: block; }
         #workspace.lyrics-open #lyrics-panel { display: block; }
         #lyrics-header { height: 3; padding-left: 1; border-bottom: solid #777777; align-vertical: middle; }

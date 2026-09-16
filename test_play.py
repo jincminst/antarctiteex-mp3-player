@@ -1726,6 +1726,9 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     panel = app.query_one("#lyrics-panel")
                     resizer = app.query_one("#lyrics-resizer")
                     self.assertGreater(resizer.region.width, 0)
+                    self.assertNotEqual(
+                        app.query_one("#library").styles.border_right[0], "solid"
+                    )
                     right_edge = panel.region.right
                     app.resize_lyrics_sidebar(right_edge - 48)
                     await pilot.pause()
@@ -1737,6 +1740,9 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
                     self.assertEqual(resizer.region.width, 0)
+                    self.assertEqual(
+                        app.query_one("#library").styles.border_right[0], "solid"
+                    )
 
     async def test_modals_and_main_layout_survive_extreme_resizes(self):
         with tempfile.TemporaryDirectory() as folder:
