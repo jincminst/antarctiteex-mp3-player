@@ -1164,6 +1164,14 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
 
+    def test_lyrics_filter_censors_disguised_words_without_changing_safe_text(self):
+        self.assertEqual(
+            play._censor_lyrics_text(
+                "s*x, s✱x, s•x, s-x, sh✱t, b!tch; hell, shell, co-op."
+            ),
+            "****, ****, ****, ****, ****, ****; hell, shell, co-op.",
+        )
+
     def test_existing_cached_lyrics_are_censored_when_loaded(self):
         player = play.Player.__new__(play.Player)
         player._all_songs_set = {"Example"}
@@ -1173,7 +1181,7 @@ class LyricsTests(unittest.TestCase):
         player.lyrics_text = ""
         player._lyrics_memory_cache = {}
         player.meta = {"Example": {"lyrics_cache": {
-            "text": "What the hell? This is shit.",
+            "text": "What the hell? This is shit and s✱x.",
             "source": "LRCLIB",
             "cache_version": play.LYRICS_CACHE_VERSION,
         }}}
@@ -1181,7 +1189,7 @@ class LyricsTests(unittest.TestCase):
 
         player.request_lyrics("Example")
 
-        self.assertEqual(player.lyrics_text, "What the hell? This is ****.")
+        self.assertEqual(player.lyrics_text, "What the hell? This is **** and ****.")
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
 
     def test_playlist_artist_name_expands_tags_without_hardcoded_aliases(self):

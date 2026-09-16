@@ -24,6 +24,27 @@ from better_profanity import profanity
 
 profanity.load_censor_words(whitelist_words=["hell"])
 
+_MASKED_WORD = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[\*✱✲✳✴✵✶✷✸✹✺✻✼✽✾•·_\-–—!]+)+[A-Za-z0-9]+(?![A-Za-z0-9])"
+)
+_MASKED_LETTERS = str.maketrans({
+    "✱": "*", "✲": "*", "✳": "*", "✴": "*", "✵": "*", "✶": "*",
+    "✷": "*", "✸": "*", "✹": "*", "✺": "*", "✻": "*", "✼": "*",
+    "✽": "*", "✾": "*", "•": "*", "·": "*", "_": "*",
+    "-": "*", "–": "*", "—": "*", "!": "i",
+})
+
+
+def _censor_lyrics_text(value):
+    """Mask profanity, including common lyric spellings with substitute glyphs."""
+    text = profanity.censor(value)
+
+    def censor_masked(match):
+        normalized = match.group().translate(_MASKED_LETTERS)
+        return "****" if profanity.censor(normalized) == "****" else match.group()
+
+    return _MASKED_WORD.sub(censor_masked, text)
+
 try:
     from rich.cells import cell_len, set_cell_size
 except ImportError:
@@ -2197,7 +2218,7 @@ class Player:
         self._lyrics_loading = False
         if result and result.get("text"):
             result = {
-                "text": profanity.censor(
+                "text": _censor_lyrics_text(
                     self._clean_lyrics_text(result.get("text"))
                 ),
                 "source": str(result.get("source") or "Lyrics"),

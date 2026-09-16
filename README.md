@@ -72,7 +72,8 @@ use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
-visible. Lyrics are censored with better-profanity; "hell" stays visible.
+visible. Lyrics are censored with better-profanity, including disguised words
+such as `s*x` and `s✱x`; "hell" stays visible.
 Drag the sidebar's left edge to resize it.
 
 Accurate artist and title metadata gives the best matches. The player reads
