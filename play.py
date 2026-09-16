@@ -1,4 +1,5 @@
 import argparse
+import html.parser
 import json
 import math
 import os
@@ -124,6 +125,7 @@ YT_STATS_WORKERS = 3
 YT_SEARCH_RESULT_LIMIT = 75
 YT_SEARCH_CHANNEL_LIMIT = 8
 LYRICS_API_URL = "https://lrclib.net/api"
+GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 LYRICS_HTTP_TIMEOUT_S = 8
 APPLE_RADIO_STATIONS = (
     {
@@ -142,6 +144,44 @@ APPLE_RADIO_STATIONS = (
         "url": "https://music.apple.com/us/station/apple-music-country/ra.1498157166",
     },
 )
+
+
+class _GeniusLyricsParser(html.parser.HTMLParser):
+    """Extract text from Genius' data-lyrics-container elements."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.lines = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "div" and attributes.get("data-lyrics-container") == "true":
+            if self.lines and self.lines[-1] != "\n":
+                self.lines.append("\n")
+            self.depth = 1
+            return
+        if not self.depth:
+            return
+        if tag == "div":
+            self.depth += 1
+        elif tag == "br":
+            self.lines.append("\n")
+
+    def handle_endtag(self, tag):
+        if self.depth and tag == "div":
+            self.depth -= 1
+            if not self.depth:
+                self.lines.append("\n")
+
+    def handle_data(self, data):
+        if self.depth:
+            self.lines.append(data)
+
+    def text(self):
+        return "".join(self.lines)
+
+
 class Player:
     """UI-independent music library and playback engine."""
 
@@ -1568,6 +1608,28 @@ class Player:
         return "", label
 
     @staticmethod
+    def _artist_tag_from_filename(name):
+        tagged = re.match(r"^\[([^\]]+)\]", str(name or "").strip())
+        return tagged.group(1).strip() if tagged else ""
+
+    @staticmethod
+    def _artist_matches_tag(artist, tag):
+        """Return whether an artist name matches a bracketed artist tag."""
+        def normalized(value):
+            value = unicodedata.normalize("NFKD", str(value or ""))
+            return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+        wanted = normalized(tag)
+        if not wanted:
+            return False
+        words = re.findall(
+            r"[A-Za-z0-9]+",
+            unicodedata.normalize("NFKD", str(artist or "")),
+        )
+        initials = "".join(word[0] for word in words if word)
+        return wanted in {normalized(artist), normalized(initials)}
+
+    @staticmethod
     def _clean_lyrics_text(value):
         """Normalize provider text while retaining its section headings."""
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -1602,7 +1664,13 @@ class Player:
     def _read_audio_lyrics_metadata(self, name):
         """Read embedded song identity and lyrics without another dependency."""
         artist, title = self._lyrics_metadata_from_filename(name)
-        metadata = {"artist": artist, "title": title, "album": "", "lyrics": ""}
+        metadata = {
+            "artist": artist,
+            "artist_tag": self._artist_tag_from_filename(name),
+            "title": title,
+            "album": "",
+            "lyrics": "",
+        }
         path = self._song_path(name)
         if not shutil.which("ffprobe") or not os.path.exists(path):
             return metadata
@@ -1644,11 +1712,71 @@ class Player:
             url,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "antarctiteex-mp3-player/0.1 (+https://github.com/jincminst/antarctiteex-mp3-player)",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://genius.com/",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             },
         )
         with urllib.request.urlopen(request, timeout=LYRICS_HTTP_TIMEOUT_S) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _fetch_text(url):
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=LYRICS_HTTP_TIMEOUT_S) as response:
+            return response.read().decode("utf-8", errors="replace")
+
+    def _fetch_genius_lyrics(self, metadata):
+        """Use Genius only when its credited artist matches the filename tag."""
+        tag = str(metadata.get("artist_tag") or "").strip()
+        title = str(metadata.get("title") or "").strip()
+        if not tag or not title:
+            return None
+        query = urllib.parse.urlencode({"q": f"{title} {tag}"})
+        payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+        response = payload.get("response", {})
+        hits = list(response.get("hits", []))
+        for section in response.get("sections", []):
+            if isinstance(section, dict) and section.get("type") == "song":
+                hits.extend(section.get("hits", []))
+        for hit in hits if isinstance(hits, list) else []:
+            result = hit.get("result", {}) if isinstance(hit, dict) else {}
+            artist = result.get("primary_artist", {}).get("name", "")
+            if not self._artist_matches_tag(artist, tag):
+                continue
+            page_url = str(result.get("url") or "").strip()
+            if not page_url:
+                continue
+            parser = _GeniusLyricsParser()
+            parser.feed(self._fetch_text(page_url))
+            lyrics = self._clean_lyrics_text(parser.text())
+            if lyrics:
+                return {"text": lyrics, "source": "Genius", "url": page_url}
+        return None
+
+    def _fetch_preferred_lyrics(self, metadata):
+        # Genius is preferred for a verified artist-tag match, but it may
+        # occasionally reject automated requests. Keep LRCLIB as a reliable
+        # fallback instead of turning a Genius outage into "unavailable".
+        try:
+            result = self._fetch_genius_lyrics(metadata)
+        except Exception:
+            result = None
+        if result:
+            return result
+        if metadata.get("lyrics"):
+            return {
+                "text": metadata["lyrics"],
+                "source": "MP3 tags",
+                "url": "",
+            }
+        return self._fetch_lrclib_lyrics(metadata)
 
     def _fetch_lrclib_lyrics(self, metadata):
         artist = metadata.get("artist", "").strip()
@@ -1762,14 +1890,7 @@ class Player:
             try:
                 metadata = self._read_audio_lyrics_metadata(name)
                 metadata["library_name"] = name
-                if metadata.get("lyrics"):
-                    result = {
-                        "text": metadata["lyrics"],
-                        "source": "MP3 tags",
-                        "url": "",
-                    }
-                else:
-                    result = self._fetch_lrclib_lyrics(metadata)
+                result = self._fetch_preferred_lyrics(metadata)
             except Exception as exc:
                 error = str(exc)
             self._finish_lyrics_request(request_id, name, result, error)

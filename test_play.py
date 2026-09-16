@@ -1166,6 +1166,107 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertEqual(cleaned, "[Verse 1]\nFirst line\n\n[Chorus]\nHook")
 
+    def test_genius_result_wins_when_artist_initials_match_tag(self):
+        player = play.Player.__new__(play.Player)
+        search = {
+            "response": {
+                "sections": [
+                    {
+                        "type": "song",
+                        "hits": [
+                            {
+                                "result": {
+                                    "title": "vampire",
+                                    "url": "https://genius.com/Olivia-rodrigo-vampire-lyrics",
+                                    "primary_artist": {"name": "Olivia Rodrigo"},
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        page = (
+            '<div data-lyrics-container="true">[Verse 1]<br>'
+            'I should have known it was strange</div>'
+        )
+        with (
+            mock.patch.object(player, "_fetch_json", return_value=search),
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics(
+                {"artist_tag": "OR", "title": "vampire"}
+            )
+
+        self.assertEqual(result["source"], "Genius")
+        self.assertEqual(result["text"], "[Verse 1]\nI should have known it was strange")
+
+    def test_genius_failure_falls_back_to_lrclib(self):
+        player = play.Player.__new__(play.Player)
+        expected = {"text": "Fallback", "source": "LRCLIB", "url": ""}
+        with (
+            mock.patch.object(
+                player, "_fetch_genius_lyrics", side_effect=OSError("blocked")
+            ),
+            mock.patch.object(
+                player, "_fetch_lrclib_lyrics", return_value=expected
+            ) as lrclib,
+        ):
+            result = player._fetch_preferred_lyrics(
+                {"artist_tag": "OR", "title": "vampire"}
+            )
+
+        self.assertIs(result, expected)
+        lrclib.assert_called_once()
+
+    def test_verified_genius_outranks_embedded_mp3_lyrics(self):
+        player = play.Player.__new__(play.Player)
+        genius = {"text": "Genius words", "source": "Genius", "url": "url"}
+        with (
+            mock.patch.object(player, "_fetch_genius_lyrics", return_value=genius),
+            mock.patch.object(player, "_fetch_lrclib_lyrics") as lrclib,
+        ):
+            result = player._fetch_preferred_lyrics(
+                {
+                    "artist_tag": "OR",
+                    "title": "vampire",
+                    "lyrics": "Embedded words",
+                }
+            )
+
+        self.assertIs(result, genius)
+        lrclib.assert_not_called()
+
+    def test_genius_rejects_artist_that_does_not_match_tag(self):
+        player = play.Player.__new__(play.Player)
+        search = {
+            "response": {
+                "sections": [
+                    {
+                        "type": "song",
+                        "hits": [
+                            {
+                                "result": {
+                                    "url": "https://genius.com/wrong",
+                                    "primary_artist": {"name": "Wrong Artist"},
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        with (
+            mock.patch.object(player, "_fetch_json", return_value=search),
+            mock.patch.object(player, "_fetch_text") as fetch_page,
+        ):
+            result = player._fetch_genius_lyrics(
+                {"artist_tag": "OR", "title": "vampire"}
+            )
+
+        self.assertIsNone(result)
+        fetch_page.assert_not_called()
+
     def test_stale_lyrics_result_cannot_replace_new_song(self):
         player = play.Player.__new__(play.Player)
         player._lyrics_request_id = 2
