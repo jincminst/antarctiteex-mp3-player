@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "antarctiteex-mp3-player"
-version = "0.1.47"
+version = "0.1.48"
 source = { editable = "." }
 dependencies = [
     { name = "pygame" },

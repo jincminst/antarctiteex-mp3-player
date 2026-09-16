@@ -377,12 +377,31 @@ class InitializationIntegrationTests(unittest.TestCase):
             player.mp3_rename_buf = "new"
             player.mp3_rename_cursor = 3
             player.focused = "search"
-            player.meta = {"old": {"plays": 7}}
+            player.meta = {
+                "old": {
+                    "plays": 7,
+                    "lyrics_cache": {
+                        "text": "Lyrics for the old filename",
+                        "source": "LRCLIB",
+                    },
+                }
+            }
             player.playlists = {}
             player._plays_cache = {"old": 7}
             player._duration_ms_cache = {}
             player._total_listen_hours_cache = {}
-            player.current = "None"
+            player._lyrics_memory_cache = {
+                "old": {"text": "Old lyrics"},
+                "new": {"text": "Earlier lyrics for new"},
+            }
+            player._lyrics_request_id = 4
+            player.lyrics_song = "old"
+            player.lyrics_status = ""
+            player.lyrics_text = "Old lyrics"
+            player.lyrics_source = "LRCLIB"
+            player.lyrics_source_url = "https://lrclib.net"
+            player._lyrics_loading = True
+            player.current = "old"
             player.selected_songs = set()
             player._selection_anchor = None
             player._needs_redraw_hdr = False
@@ -398,6 +417,11 @@ class InitializationIntegrationTests(unittest.TestCase):
             saved = json.loads(Path(folder, play.META_FILE).read_text())
             self.assertEqual(saved["songs"], {"new": {"plays": 7}})
             self.assertEqual(saved["playlists"], {})
+            self.assertEqual(player.current, "new")
+            self.assertEqual(player._lyrics_memory_cache, {})
+            self.assertEqual(player._lyrics_request_id, 5)
+            self.assertEqual(player.lyrics_song, "")
+            self.assertEqual(player.lyrics_text, "")
             self.assertEqual(saved["analysis"], {})
             self.assertTrue(Path(folder, "new.mp3").exists())
             rebuild_pool.assert_called_once_with()

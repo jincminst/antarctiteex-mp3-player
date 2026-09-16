@@ -2700,8 +2700,16 @@ class Player:
                     if song == old:
                         playlist[i] = new
             if old in self.meta:
-                self.meta[new] = self.meta.pop(old)
+                renamed_meta = self.meta.pop(old)
+                if isinstance(renamed_meta, dict):
+                    # A filename rename may change the artist/title used for
+                    # lookup. Carry play statistics forward, but force lyrics
+                    # to be resolved again for the new name.
+                    renamed_meta.pop("lyrics_cache", None)
+                self.meta[new] = renamed_meta
                 self._save_meta()
+            self._lyrics_memory_cache.pop(old, None)
+            self._lyrics_memory_cache.pop(new, None)
             if old in self._plays_cache:
                 self._plays_cache[new] = self._plays_cache.pop(old)
             if old in self._duration_ms_cache:
@@ -2714,6 +2722,16 @@ class Player:
             self._rebuild_play_pool()
             if self.current == old:
                 self.current = new
+            if self.lyrics_song == old:
+                # Reject a worker that may still be fetching under the old
+                # filename. The UI will immediately request the renamed song.
+                self._lyrics_request_id += 1
+                self.lyrics_song = ""
+                self.lyrics_status = ""
+                self.lyrics_text = ""
+                self.lyrics_source = ""
+                self.lyrics_source_url = ""
+                self._lyrics_loading = False
             if old in self.selected_songs:
                 self.selected_songs.remove(old)
                 self.selected_songs.add(new)
