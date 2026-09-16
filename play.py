@@ -7963,6 +7963,8 @@ if TEXTUAL_AVAILABLE:
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.dragging = False
+            self._drag_start_x = 0
+            self._drag_start_width = 0
 
         def render(self):
             # Continue both panel borders across the divider; keep the
@@ -7980,19 +7982,29 @@ if TEXTUAL_AVAILABLE:
         async def _on_mouse_down(self, event):
             if event.button == 1:
                 self.dragging = True
+                self._drag_start_x = event.screen_x
+                self._drag_start_width = self.app.query_one(
+                    "#playlists", Vertical
+                ).region.width
                 self.capture_mouse()
                 event.stop()
 
         async def _on_mouse_move(self, event):
             if self.dragging:
-                self.app.resize_playlist_sidebar(event.screen_x)
+                pointer_delta = event.screen_x - self._drag_start_x
+                self.app.resize_playlist_sidebar(
+                    self._drag_start_width + pointer_delta
+                )
                 event.stop()
 
         async def _on_mouse_up(self, event):
             if self.dragging and event.button == 1:
                 self.dragging = False
                 self.release_mouse()
-                self.app.resize_playlist_sidebar(event.screen_x)
+                pointer_delta = event.screen_x - self._drag_start_x
+                self.app.resize_playlist_sidebar(
+                    self._drag_start_width + pointer_delta
+                )
                 event.stop()
 
 
@@ -8485,6 +8497,7 @@ if TEXTUAL_AVAILABLE:
             self._lyrics_token = None
             self._lyrics_dismissed_token = None
             self._lyrics_width = None
+            self._playlist_width = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="top"):
@@ -8582,15 +8595,40 @@ if TEXTUAL_AVAILABLE:
                 )
             if self._lyrics_width is not None:
                 self.call_after_refresh(self._clamp_lyrics_sidebar_width)
+            if self._playlist_width is not None:
+                self.call_after_refresh(self._clamp_playlist_sidebar_width)
 
-        def resize_playlist_sidebar(self, screen_x):
-            """Resize the sidebar from its right-hand drag handle."""
+        def resize_playlist_sidebar(self, requested_width):
+            """Resize the playlist sidebar while preserving the other panes."""
             playlists = self.query_one("#playlists", Vertical)
-            minimum = 14
-            maximum = max(minimum, min(48, self.screen.size.width - 35))
-            width = max(minimum, min(maximum, screen_x - playlists.region.x))
+            minimum, maximum = self._playlist_width_limits()
+            width = max(minimum, min(maximum, round(requested_width)))
+            self._playlist_width = width
             playlists.styles.width = width
             self.call_after_refresh(self._fit_table_columns)
+
+        def _playlist_width_limits(self):
+            """Keep the playlist pane from crowding the library or lyrics."""
+            workspace = self.query_one("#workspace", Horizontal)
+            lyrics_width = 0
+            if workspace.has_class("lyrics-open"):
+                lyrics_width = (
+                    self.query_one("#lyrics-panel", Vertical).region.width + 1
+                )
+            # Account for the playlist divider and leave a useful song table.
+            available = workspace.content_region.width - lyrics_width - 1 - 30
+            minimum = min(14, max(8, available))
+            maximum = max(minimum, min(42, available))
+            return minimum, maximum
+
+        def _clamp_playlist_sidebar_width(self):
+            if self._playlist_width is None:
+                return
+            minimum, maximum = self._playlist_width_limits()
+            width = max(minimum, min(maximum, self._playlist_width))
+            self._playlist_width = width
+            self.query_one("#playlists", Vertical).styles.width = width
+            self._fit_table_columns()
 
         def resize_lyrics_sidebar(self, screen_x):
             """Resize the right sidebar from its left-hand drag handle."""
@@ -8852,7 +8890,10 @@ if TEXTUAL_AVAILABLE:
                 p.request_lyrics(name)
                 self.call_after_refresh(self._refit_resized_table)
             visible = token is not None and token != self._lyrics_dismissed_token
+            visibility_changed = workspace.has_class("lyrics-open") != visible
             workspace.set_class(visible, "lyrics-open")
+            if visibility_changed and self._playlist_width is not None:
+                self.call_after_refresh(self._clamp_playlist_sidebar_width)
             if not visible:
                 return
             self.query_one("#lyrics-track", Static).update(Text(name))

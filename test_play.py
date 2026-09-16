@@ -1234,6 +1234,35 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     transport.assert_called_once_with()
                     refresh_ui.assert_not_called()
 
+    async def test_playlist_resize_tracks_pointer_delta_and_preserves_library(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 24)) as pilot:
+                    sidebar = app.query_one("#playlists")
+                    handle = app.query_one("#playlist-resizer")
+                    initial_width = sidebar.region.width
+
+                    handle.dragging = True
+                    handle._drag_start_x = handle.region.x
+                    handle._drag_start_width = initial_width
+                    event = mock.Mock(screen_x=handle.region.x + 1)
+                    await handle._on_mouse_move(event)
+                    await pilot.pause()
+                    self.assertEqual(sidebar.region.width, initial_width + 1)
+
+                    app.player.current = "example"
+                    app.player._all_songs_set.add("example")
+                    app.player._playback_id += 1
+                    with mock.patch.object(app.player, "request_lyrics"):
+                        app._sync_lyrics_panel()
+                    await pilot.pause()
+                    app.resize_playlist_sidebar(42)
+                    await pilot.pause()
+                    library = app.query_one("#library")
+                    self.assertGreaterEqual(library.region.width, 30)
+                    self.assertLess(sidebar.region.width, 42)
+
     async def test_lyrics_sidebar_opens_for_playback_and_can_be_closed(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "[OR] vampire.mp3").touch()
