@@ -1166,6 +1166,21 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertEqual(cleaned, "[Verse 1]\nFirst line\n\n[Chorus]\nHook")
 
+    def test_lyrics_cleanup_removes_genius_preamble_and_control_junk(self):
+        cleaned = play.Player._clean_lyrics_text(
+            "\ufeff\x0062 ContributorsTranslationsEspañolDeutschSong Lyrics"
+            "A page description… Read More\u00a0[Verse 1]\nFirst line"
+        )
+        self.assertEqual(cleaned, "[Verse 1]\nFirst line")
+
+    def test_genius_title_matching_rejects_translation_and_remix_pages(self):
+        score = play.Player._genius_title_score
+        self.assertEqual(score("vampire", "vampire"), 100)
+        self.assertEqual(score("vampire ft. Someone", "vampire"), 90)
+        self.assertEqual(score("vampire (Spanish Translation)", "vampire"), 0)
+        self.assertEqual(score("vampire Remix", "vampire"), 0)
+        self.assertEqual(score("vampire diaries", "vampire"), 0)
+
     def test_genius_result_wins_when_artist_initials_match_tag(self):
         player = play.Player.__new__(play.Player)
         search = {
@@ -1200,6 +1215,42 @@ class LyricsTests(unittest.TestCase):
 
         self.assertEqual(result["source"], "Genius")
         self.assertEqual(result["text"], "[Verse 1]\nI should have known it was strange")
+
+    def test_genius_ranks_exact_title_above_unrelated_artist_result(self):
+        player = play.Player.__new__(play.Player)
+        search = {
+            "response": {
+                "sections": [{
+                    "type": "song",
+                    "hits": [
+                        {"result": {
+                            "title": "vampire diaries",
+                            "url": "https://genius.com/wrong-title",
+                            "primary_artist": {"name": "Olivia Rodrigo"},
+                        }},
+                        {"result": {
+                            "title": "vampire",
+                            "url": "https://genius.com/right",
+                            "primary_artist": {"name": "Olivia Rodrigo"},
+                        }},
+                    ],
+                }]
+            }
+        }
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Right</div>'
+        with (
+            mock.patch.object(player, "_fetch_json", return_value=search) as search_call,
+            mock.patch.object(player, "_fetch_text", return_value=page) as page_call,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Olivia Rodrigo",
+                "artist_tag": "OR",
+                "title": "vampire",
+            })
+
+        self.assertIn("Olivia+Rodrigo", search_call.call_args.args[0])
+        page_call.assert_called_once_with("https://genius.com/right")
+        self.assertEqual(result["text"], "[Verse 1]\nRight")
 
     def test_genius_failure_falls_back_to_lrclib(self):
         player = play.Player.__new__(play.Player)

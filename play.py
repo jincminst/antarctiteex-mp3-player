@@ -127,6 +127,7 @@ YT_SEARCH_CHANNEL_LIMIT = 8
 LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 LYRICS_HTTP_TIMEOUT_S = 8
+LYRICS_CACHE_VERSION = 2
 APPLE_RADIO_STATIONS = (
     {
         "name": "Apple Music 1",
@@ -1630,9 +1631,61 @@ class Player:
         return wanted in {normalized(artist), normalized(initials)}
 
     @staticmethod
+    def _normalized_lyrics_identity(value):
+        """Normalize song/artist text for provider result matching."""
+        value = unicodedata.normalize("NFKD", str(value or "")).casefold()
+        return " ".join(re.findall(r"[a-z0-9]+", value))
+
+    @classmethod
+    def _genius_title_score(cls, candidate, wanted):
+        """Score a Genius title without confusing translations for originals."""
+        candidate = cls._normalized_lyrics_identity(candidate)
+        wanted = cls._normalized_lyrics_identity(wanted)
+        if not candidate or not wanted:
+            return 0
+        if candidate == wanted:
+            return 100
+
+        extra_version = re.compile(
+            r"\b(?:romanized|translation|translated|live|remix|edit|remaster(?:ed)?|"
+            r"instrumental|karaoke|demo|acoustic|sped up|slowed)\b"
+        )
+        if candidate.startswith(wanted + " "):
+            suffix = candidate[len(wanted):].strip()
+            if extra_version.search(suffix):
+                return 0
+            # Genius sometimes includes a featured artist in the result title.
+            if suffix.startswith(("feat ", "featuring ", "ft ")):
+                return 90
+        return 0
+
+    @staticmethod
     def _clean_lyrics_text(value):
         """Normalize provider text while retaining its section headings."""
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        text = text.replace("\ufeff", "").replace("\u00a0", " ")
+        text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+        text = re.sub(r"^(?:ï»¿|ÿþ|þÿ)+", "", text)
+
+        # Genius occasionally puts its contributor count, translation menu,
+        # description and "Read More" control inside the lyrics container.
+        # When a real section marker follows that unmistakable preamble, start
+        # at the marker rather than displaying the page chrome as lyrics.
+        section = re.search(
+            r"\[(?:verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|intro|"
+            r"outro|refrain|hook|break|interlude)(?:[^\]]*)\]",
+            text,
+            re.I,
+        )
+        if section:
+            preamble = text[:section.start()]
+            if re.search(
+                r"\bcontributors?\b|translations?|read\s+more",
+                preamble,
+                re.I,
+            ):
+                text = text[section.start():]
         # Convert synced LRC to readable lyrics. Metadata lines such as [ar:]
         # are omitted, while structural labels such as [Chorus] remain.
         lines = []
@@ -1733,28 +1786,65 @@ class Player:
             return response.read().decode("utf-8", errors="replace")
 
     def _fetch_genius_lyrics(self, metadata):
-        """Use Genius only when its credited artist matches the filename tag."""
+        """Find the best exact-title Genius result for the known artist."""
         tag = str(metadata.get("artist_tag") or "").strip()
+        known_artist = str(metadata.get("artist") or "").strip()
         title = str(metadata.get("title") or "").strip()
-        if not tag or not title:
+        if not title or not (tag or known_artist):
             return None
-        query = urllib.parse.urlencode({"q": f"{title} {tag}"})
-        payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
-        response = payload.get("response", {})
-        hits = list(response.get("hits", []))
-        for section in response.get("sections", []):
-            if isinstance(section, dict) and section.get("type") == "song":
-                hits.extend(section.get("hits", []))
-        for hit in hits if isinstance(hits, list) else []:
-            result = hit.get("result", {}) if isinstance(hit, dict) else {}
-            artist = result.get("primary_artist", {}).get("name", "")
-            if not self._artist_matches_tag(artist, tag):
+
+        # Embedded artist metadata is normally a much better query than an
+        # abbreviated filename tag such as OR or 21P. Retry with the tag only
+        # when the stronger query did not produce a verified result.
+        query_artists = []
+        for artist in (known_artist, tag):
+            if artist and self._normalized_lyrics_identity(artist) not in {
+                self._normalized_lyrics_identity(item) for item in query_artists
+            }:
+                query_artists.append(artist)
+
+        candidates = {}
+        for query_artist in query_artists:
+            query = urllib.parse.urlencode({"q": f"{title} {query_artist}"})
+            try:
+                payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+            except Exception:
+                break
+            response = payload.get("response", {})
+            hits = list(response.get("hits", []))
+            for section in response.get("sections", []):
+                if isinstance(section, dict) and section.get("type") == "song":
+                    hits.extend(section.get("hits", []))
+            for hit in hits if isinstance(hits, list) else []:
+                result = hit.get("result", {}) if isinstance(hit, dict) else {}
+                page_url = str(result.get("url") or "").strip()
+                artist = str(result.get("primary_artist", {}).get("name", ""))
+                candidate_title = str(
+                    result.get("title") or result.get("full_title") or ""
+                )
+                title_score = self._genius_title_score(candidate_title, title)
+                artist_exact = (
+                    self._normalized_lyrics_identity(artist)
+                    == self._normalized_lyrics_identity(known_artist)
+                ) if known_artist else False
+                artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
+                if not page_url or not title_score or not (artist_exact or artist_tag_match):
+                    continue
+                score = title_score + (50 if artist_exact else 35)
+                previous = candidates.get(page_url)
+                if previous is None or score > previous[0]:
+                    candidates[page_url] = (score, result)
+            if candidates:
+                break
+
+        for page_url, (_score, _result) in sorted(
+            candidates.items(), key=lambda item: item[1][0], reverse=True
+        ):
+            try:
+                parser = _GeniusLyricsParser()
+                parser.feed(self._fetch_text(page_url))
+            except Exception:
                 continue
-            page_url = str(result.get("url") or "").strip()
-            if not page_url:
-                continue
-            parser = _GeniusLyricsParser()
-            parser.feed(self._fetch_text(page_url))
             lyrics = self._clean_lyrics_text(parser.text())
             if lyrics:
                 return {"text": lyrics, "source": "Genius", "url": page_url}
@@ -1878,7 +1968,11 @@ class Player:
         entry = self.meta.get(name, {})
         if not cached and isinstance(entry, dict):
             saved = entry.get("lyrics_cache")
-            if isinstance(saved, dict) and saved.get("text"):
+            if (
+                isinstance(saved, dict)
+                and saved.get("text")
+                and saved.get("cache_version") == LYRICS_CACHE_VERSION
+            ):
                 cached = saved
         if cached:
             self._finish_lyrics_request(request_id, name, cached)
@@ -1906,6 +2000,7 @@ class Player:
                 "text": self._clean_lyrics_text(result.get("text")),
                 "source": str(result.get("source") or "Lyrics"),
                 "url": str(result.get("url") or ""),
+                "cache_version": LYRICS_CACHE_VERSION,
             }
             self._lyrics_memory_cache[name] = result
             self.lyrics_text = result["text"]
