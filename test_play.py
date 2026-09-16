@@ -1184,7 +1184,7 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(player.lyrics_text, "What the hell? This is ****.")
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
 
-    def test_playlist_artist_name_expands_tags_and_known_aliases(self):
+    def test_playlist_artist_name_expands_tags_without_hardcoded_aliases(self):
         player = play.Player.__new__(play.Player)
         player.playlist_tags = {
             "Olivia Rodrigo": "OR",
@@ -1193,14 +1193,21 @@ class LyricsTests(unittest.TestCase):
         }
         self.assertEqual(player._playlist_artist_for_tag("OR"), "Olivia Rodrigo")
         self.assertEqual(player._playlist_artist_for_tag("21P"), "Twenty One Pilots")
-        self.assertEqual(player._playlist_artist_for_tag("AG"), "Ariana Grande")
+        self.assertEqual(player._playlist_artist_for_tag("AG"), "")
         self.assertEqual(player._playlist_artist_for_tag("X"), "")
 
-    def test_ag_freak_uses_artist_alias_and_verified_genius_result(self):
+    def test_ag_freak_infers_artist_from_clearer_sibling_song(self):
         player = play.Player.__new__(play.Player)
         player.folder = "/unused"
         player.playlist_tags = {}
-        search = {"response": {"hits": [{"result": {
+        player.artist_hints = {}
+        player.all_songs = ["[AG] freak", "[AG] 7 rings"]
+        sibling_search = {"response": {"hits": [{"result": {
+            "title": "7 rings",
+            "url": "https://genius.com/Ariana-grande-7-rings-lyrics",
+            "primary_artist": {"name": "Ariana Grande"},
+        }}]}}
+        freak_search = {"response": {"hits": [{"result": {
             "title": "freak",
             "url": "https://genius.com/Ariana-grande-freak-lyrics",
             "primary_artist": {"name": "Ariana Grande"},
@@ -1209,14 +1216,48 @@ class LyricsTests(unittest.TestCase):
         with (
             mock.patch.object(play.shutil, "which", return_value=None),
             mock.patch.dict(play.os.environ, {"GENIUS_ACCESS_TOKEN": ""}),
-            mock.patch.object(player, "_fetch_json", return_value=search) as fetch,
+            mock.patch.object(
+                player, "_fetch_json", side_effect=[sibling_search, freak_search]
+            ) as fetch,
             mock.patch.object(player, "_fetch_text", return_value=page),
         ):
             metadata = player._read_audio_lyrics_metadata("[AG] freak")
+            metadata["library_name"] = "[AG] freak"
             result = player._fetch_genius_lyrics(metadata)
         self.assertEqual(metadata["artist_hint"], "Ariana Grande")
+        self.assertIn("7+rings", fetch.call_args_list[0].args[0])
         self.assertIn("freak+Ariana+Grande", fetch.call_args.args[0])
         self.assertEqual(result["url"], "https://genius.com/Ariana-grande-freak-lyrics")
+        self.assertEqual(player.artist_hints["AG"], "Ariana Grande")
+        self.assertEqual(player._playlist_artist_for_tag("AG"), "Ariana Grande")
+
+    def test_tag_inference_rejects_unrelated_artist(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/unused"
+        player.playlist_tags = {}
+        player.artist_hints = {}
+        player.all_songs = ["[AG] freak", "[AG] 7 rings"]
+        search = {"response": {"hits": [{"result": {
+            "title": "7 rings", "primary_artist": {"name": "Wrong Artist"},
+        }}]}}
+        with (
+            mock.patch.object(play.shutil, "which", return_value=None),
+            mock.patch.object(player, "_search_genius", return_value=search),
+        ):
+            self.assertEqual(player._infer_artist_for_tag("AG", "[AG] freak"), "")
+        self.assertEqual(player.artist_hints, {})
+
+    def test_inferred_artist_is_saved_in_unified_cache(self):
+        player = play.Player.__new__(play.Player)
+        player._cache = play.Player._empty_cache()
+        player.artist_hints = {"AG": "Ariana Grande"}
+        player._session_snapshot = lambda: {}
+        with mock.patch.object(player, "_write_cache", return_value=True) as write:
+            player._save_cache()
+        self.assertEqual(
+            write.call_args.args[0]["settings"]["artist_hints"],
+            {"AG": "Ariana Grande"},
+        )
 
     def test_filename_lyrics_metadata_includes_playlist_artist_hint(self):
         player = play.Player.__new__(play.Player)

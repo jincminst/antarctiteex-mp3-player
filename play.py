@@ -255,6 +255,16 @@ class Player:
 
         self.playlists = self._load_playlists()
         self.playlist_tags = self._load_playlist_tags()
+        saved_hints = settings.get("artist_hints", {})
+        self.artist_hints = (
+            {
+                tag.upper(): artist
+                for tag, artist in saved_hints.items()
+                if isinstance(tag, str) and isinstance(artist, str)
+                and tag.strip() and artist.strip()
+            }
+            if isinstance(saved_hints, dict) else {}
+        )
         self.tab_names = ["All"]
         self._rebuild_tab_names()
         self.active_tab = 0
@@ -1452,6 +1462,7 @@ class Player:
                 "settings": {
                     **previous_settings,
                     "show_tags": getattr(self, "show_tags", True),
+                    "artist_hints": getattr(self, "artist_hints", {}).copy(),
                     "session": self._session_snapshot(),
                 },
             }
@@ -1618,22 +1629,72 @@ class Player:
         return tagged.group(1).strip() if tagged else ""
 
     def _playlist_artist_for_tag(self, tag):
-        """Use an artist-named tagged playlist to expand a filename alias."""
-        aliases = {
-            "OR": "Olivia Rodrigo",
-            "21P": "Twenty One Pilots",
-            "AG": "Ariana Grande",
-        }
+        """Find an artist from a tagged playlist or a verified cached hint."""
         tag = str(tag or "").strip()
         for name, playlist_tag in getattr(self, "playlist_tags", {}).items():
-            if str(playlist_tag).casefold() != tag.casefold():
-                continue
-            if (
-                self._artist_matches_tag(name, tag)
-                or name.casefold() == aliases.get(tag.upper(), "").casefold()
-            ):
+            if str(playlist_tag).casefold() == tag.casefold():
                 return name
-        return aliases.get(tag.upper(), "")
+        return getattr(self, "artist_hints", {}).get(tag.upper(), "")
+
+    def _remember_artist_for_tag(self, tag, artist):
+        if not tag or not artist:
+            return
+        hints = getattr(self, "artist_hints", None)
+        if hints is None:
+            hints = self.artist_hints = {}
+        if hints.get(tag.upper()) != artist:
+            hints[tag.upper()] = artist
+            self._meta_dirty = True
+
+    def _infer_artist_for_tag(self, tag, current_name):
+        """Identify an abbreviation from a clearer sibling song in the library."""
+        siblings = [
+            name for name in getattr(self, "all_songs", [])
+            if name != current_name
+            and self._artist_tag_from_filename(name).casefold() == tag.casefold()
+        ]
+        embedded_artists = set()
+        for name in siblings:
+            artist, _title = self._lyrics_metadata_from_filename(name)
+            metadata = self._read_audio_lyrics_metadata(name)
+            embedded_artist = str(metadata.get("artist") or "").strip()
+            if embedded_artist and embedded_artist.casefold() != artist.casefold():
+                embedded_artists.add(embedded_artist)
+        if len(embedded_artists) == 1:
+            artist = embedded_artists.pop()
+            self._remember_artist_for_tag(tag, artist)
+            return artist
+
+        # Try a few distinctive titles, rather than searching the ambiguous
+        # current title with initials that Genius may treat as unrelated words.
+        siblings.sort(
+            key=lambda name: (
+                bool(re.search(r"\d", self._lyrics_metadata_from_filename(name)[1])),
+                len(self._lyrics_metadata_from_filename(name)[1].split()) > 1,
+                len(name),
+            ),
+            reverse=True,
+        )
+        for name in siblings[:4]:
+            _artist, title = self._lyrics_metadata_from_filename(name)
+            try:
+                payload = self._search_genius(title)
+            except Exception:
+                break
+            found = set()
+            for hit in self._genius_song_hits(payload):
+                result = hit.get("result", {}) if isinstance(hit, dict) else {}
+                artist = str(result.get("primary_artist", {}).get("name") or "").strip()
+                if (
+                    self._genius_title_score(result.get("title", ""), title) == 100
+                    and self._artist_matches_tag(artist, tag)
+                ):
+                    found.add(artist)
+            if len(found) == 1:
+                artist = found.pop()
+                self._remember_artist_for_tag(tag, artist)
+                return artist
+        return ""
 
     @staticmethod
     def _artist_matches_tag(artist, tag):
@@ -1838,6 +1899,25 @@ class Player:
         with urllib.request.urlopen(request, timeout=LYRICS_HTTP_TIMEOUT_S) as response:
             return response.read().decode("utf-8", errors="replace")
 
+    def _search_genius(self, search_text):
+        query = urllib.parse.urlencode({"q": search_text})
+        token = os.environ.get("GENIUS_ACCESS_TOKEN", "").strip()
+        if token:
+            return self._fetch_json(
+                f"{GENIUS_OFFICIAL_SEARCH_URL}?{query}",
+                {"Authorization": f"Bearer {token}"},
+            )
+        return self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+
+    @staticmethod
+    def _genius_song_hits(payload):
+        response = payload.get("response", {})
+        hits = list(response.get("hits", []))
+        for section in response.get("sections", []):
+            if isinstance(section, dict) and section.get("type") == "song":
+                hits.extend(section.get("hits", []))
+        return hits
+
     def _fetch_genius_lyrics(self, metadata):
         """Find the best exact-title Genius result for the known artist."""
         tag = str(metadata.get("artist_tag") or "").strip()
@@ -1846,6 +1926,11 @@ class Player:
         title = str(metadata.get("title") or "").strip()
         if not title or not (tag or known_artist or artist_hint):
             return None
+        if tag and not artist_hint and known_artist.casefold() == tag.casefold():
+            artist_hint = self._infer_artist_for_tag(
+                tag, str(metadata.get("library_name") or "")
+            )
+            metadata["artist_hint"] = artist_hint
 
         # Embedded artist metadata is normally a much better query than an
         # abbreviated filename tag such as OR or 21P. Retry with the tag only
@@ -1863,27 +1948,14 @@ class Player:
 
         candidates = {}
         search_failed = False
-        token = os.environ.get("GENIUS_ACCESS_TOKEN", "").strip()
         for query_title in self._lyrics_title_variants(title):
             for query_artist in query_artists:
-                query = urllib.parse.urlencode({"q": f"{query_title} {query_artist}"})
                 try:
-                    if token:
-                        payload = self._fetch_json(
-                            f"{GENIUS_OFFICIAL_SEARCH_URL}?{query}",
-                            {"Authorization": f"Bearer {token}"},
-                        )
-                    else:
-                        payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+                    payload = self._search_genius(f"{query_title} {query_artist}")
                 except Exception:
                     search_failed = True
                     break
-                response = payload.get("response", {})
-                hits = list(response.get("hits", []))
-                for section in response.get("sections", []):
-                    if isinstance(section, dict) and section.get("type") == "song":
-                        hits.extend(section.get("hits", []))
-                for hit in hits if isinstance(hits, list) else []:
+                for hit in self._genius_song_hits(payload):
                     result = hit.get("result", {}) if isinstance(hit, dict) else {}
                     page_url = str(result.get("url") or "").strip()
                     artist = str(result.get("primary_artist", {}).get("name", ""))
