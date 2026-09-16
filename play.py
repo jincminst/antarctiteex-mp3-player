@@ -7996,6 +7996,22 @@ if TEXTUAL_AVAILABLE:
                 event.stop()
 
 
+    class LyricsResizeHandle(PlaylistResizeHandle):
+        """Mouse-drag handle between the song table and lyrics sidebar."""
+
+        async def _on_mouse_move(self, event):
+            if self.dragging:
+                self.app.resize_lyrics_sidebar(event.screen_x)
+                event.stop()
+
+        async def _on_mouse_up(self, event):
+            if self.dragging and event.button == 1:
+                self.dragging = False
+                self.release_mouse()
+                self.app.resize_lyrics_sidebar(event.screen_x)
+                event.stop()
+
+
     class ConfirmScreen(ModalScreen):
         """Small mouse-first confirmation dialog."""
 
@@ -8387,7 +8403,9 @@ if TEXTUAL_AVAILABLE:
         #playlist-buttons Button.drop-target { background: #dbeafe; color: #111111; text-style: bold; }
         #playlist-buttons Button.new-playlist-link { color: #555555; text-style: underline; margin-top: 1; }
         #library { width: 1fr; border: solid #777777; border-left: none; }
-        #lyrics-panel { display: none; width: 34; min-width: 26; border: solid #777777; border-left: none; background: #fafaf7; }
+        #lyrics-resizer { display: none; width: 1; min-width: 1; height: 1fr; }
+        #lyrics-panel { display: none; width: 34; min-width: 8; border: solid #777777; border-left: none; background: #fafaf7; }
+        #workspace.lyrics-open #lyrics-resizer { display: block; }
         #workspace.lyrics-open #lyrics-panel { display: block; }
         #lyrics-header { height: 3; padding-left: 1; border-bottom: solid #777777; align-vertical: middle; }
         #lyrics-heading { width: 1fr; height: 3; content-align: left middle; text-style: bold; }
@@ -8428,7 +8446,7 @@ if TEXTUAL_AVAILABLE:
         }
         Screen.narrow #workspace { padding: 0; }
         Screen.narrow #playlists { width: 14; min-width: 14; }
-        Screen.narrow #lyrics-panel { width: 29; min-width: 24; }
+        Screen.narrow #lyrics-panel { width: 29; }
         Screen.narrow #top { padding: 0 1; }
         Screen.tiny #playlists { display: none; }
         Screen.tiny #playlist-resizer { display: none; }
@@ -8466,6 +8484,7 @@ if TEXTUAL_AVAILABLE:
             self._drag_badge_width = 8
             self._lyrics_token = None
             self._lyrics_dismissed_token = None
+            self._lyrics_width = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="top"):
@@ -8512,6 +8531,7 @@ if TEXTUAL_AVAILABLE:
                         yield Button("Apple Radio", id="apple-radio")
                         yield Button("YT Preview", id="yt-preview")
                         yield Button("Cancel", id="cancel")
+                yield LyricsResizeHandle(id="lyrics-resizer")
                 with Vertical(id="lyrics-panel"):
                     with Horizontal(id="lyrics-header"):
                         yield Static("LYRICS", id="lyrics-heading")
@@ -8560,6 +8580,8 @@ if TEXTUAL_AVAILABLE:
                 self.call_after_refresh(
                     lambda: self.refresh_ui(rebuild_table=True)
                 )
+            if self._lyrics_width is not None:
+                self.call_after_refresh(self._clamp_lyrics_sidebar_width)
 
         def resize_playlist_sidebar(self, screen_x):
             """Resize the sidebar from its right-hand drag handle."""
@@ -8569,6 +8591,37 @@ if TEXTUAL_AVAILABLE:
             width = max(minimum, min(maximum, screen_x - playlists.region.x))
             playlists.styles.width = width
             self.call_after_refresh(self._fit_table_columns)
+
+        def resize_lyrics_sidebar(self, screen_x):
+            """Resize the right sidebar from its left-hand drag handle."""
+            panel = self.query_one("#lyrics-panel", Vertical)
+            minimum, maximum = self._lyrics_width_limits()
+            width = panel.region.right - screen_x
+            width = max(minimum, min(maximum, width))
+            self._lyrics_width = width
+            panel.styles.width = width
+            self.call_after_refresh(self._refit_resized_table)
+
+        def _lyrics_width_limits(self):
+            """Keep both lyrics and library usable at the current terminal size."""
+            workspace = self.query_one("#workspace", Horizontal)
+            left_width = self.query_one("#playlists", Vertical).region.width
+            preferred_minimum = 18 if self.screen.size.width < 82 else 22
+            # Leave at least 16 cells for the song table. On exceptionally
+            # tiny terminals the sidebar may shrink as far as eight cells.
+            available = max(8, workspace.region.width - left_width - 16)
+            minimum = min(preferred_minimum, available)
+            maximum = max(minimum, min(64, available))
+            return minimum, maximum
+
+        def _clamp_lyrics_sidebar_width(self):
+            if self._lyrics_width is None:
+                return
+            minimum, maximum = self._lyrics_width_limits()
+            width = max(minimum, min(maximum, self._lyrics_width))
+            self._lyrics_width = width
+            self.query_one("#lyrics-panel", Vertical).styles.width = width
+            self._refit_resized_table()
 
         def begin_song_drag(self, song_name):
             if not self.player or song_name not in self.player.songs:

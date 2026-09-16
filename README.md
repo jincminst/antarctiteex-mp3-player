@@ -67,7 +67,8 @@ Starting a local song opens a scrollable lyrics sidebar on the right. The
 player first uses lyrics embedded in the MP3, then queries LRCLIB in the
 background. Successful results are saved in `.mp3cache.json`, so replaying a
 song does not make another network request. Section headings supplied by the
-source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain visible.
+source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain visible. Drag the
+sidebar's left edge to resize it.
 
 Accurate artist and title metadata gives the best matches. The player reads
 MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or
