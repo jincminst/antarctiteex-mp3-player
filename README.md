@@ -63,8 +63,9 @@ The player stores song metadata, playlists, settings, and analysis in a single
 
 ## Lyrics
 
-Starting a local song opens a scrollable lyrics sidebar on the right. The
-player searches Genius for a verified song and artist, then reads the lyrics
+Click the vertical **Lyrics** tab beside the song list to open the scrollable
+sidebar. Lyrics are looked up only while that sidebar is open. The player
+searches Genius for a verified song and artist, then reads the lyrics
 from its song page. If that fails, it tries lyrics embedded in the MP3 and
 then LRCLIB. Genius's official API returns song metadata and page URLs, not
 lyrics text. Set `GENIUS_ACCESS_TOKEN` to a Genius API client access token to
@@ -74,12 +75,14 @@ replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
 visible. Lyrics are censored with better-profanity, including disguised words
 such as `s*x`, `s✱x`, and `s*xy`; "hell" stays visible.
-Drag the sidebar's left edge to resize it.
+Drag the sidebar's left edge to resize it. Playlist and lyrics widths are saved
+in `.mp3cache.json` and restored the next time you open the player. Resizing
+lyrics leaves the playlist width alone.
 
 Accurate artist and title metadata gives the best matches. The player reads
 MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or
-`Artist - Song Title.mp3`. You can close the sidebar with its `×` button; it
-opens again when another song starts.
+`Artist - Song Title.mp3`. Close the sidebar with its `×` button or the
+vertical Lyrics tab.
 
 For abbreviated artist tags, an artist-named playlist with the same tag can
 identify the artist. If no playlist exists, the player can infer the artist

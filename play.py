@@ -217,6 +217,15 @@ class Player:
         self._cache = self._load_cache()
         self.analysis = self._cache["analysis"]
         settings = self._cache.get("settings", {})
+        saved_layout = settings.get("layout", {})
+        self.layout_widths = {}
+        if isinstance(saved_layout, dict):
+            for pane, minimum, maximum in (
+                ("playlists", 8, 42), ("lyrics", 8, 64)
+            ):
+                width = saved_layout.get(pane)
+                if isinstance(width, int) and not isinstance(width, bool):
+                    self.layout_widths[pane] = max(minimum, min(maximum, width))
         saved_session = settings.get("session", {})
         if not isinstance(saved_session, dict):
             saved_session = {}
@@ -1483,6 +1492,7 @@ class Player:
                     **previous_settings,
                     "show_tags": getattr(self, "show_tags", True),
                     "artist_hints": getattr(self, "artist_hints", {}).copy(),
+                    "layout": getattr(self, "layout_widths", {}).copy(),
                     "session": self._session_snapshot(),
                 },
             }
@@ -8469,7 +8479,7 @@ if TEXTUAL_AVAILABLE:
                 self.release_mouse()
                 pointer_delta = event.screen_x - self._drag_start_x
                 self.app.resize_playlist_sidebar(
-                    self._drag_start_width + pointer_delta
+                    self._drag_start_width + pointer_delta, persist=True
                 )
                 event.stop()
 
@@ -8486,7 +8496,7 @@ if TEXTUAL_AVAILABLE:
             if self.dragging and event.button == 1:
                 self.dragging = False
                 self.release_mouse()
-                self.app.resize_lyrics_sidebar(event.screen_x)
+                self.app.resize_lyrics_sidebar(event.screen_x, persist=True)
                 event.stop()
 
 
@@ -8881,6 +8891,8 @@ if TEXTUAL_AVAILABLE:
         #playlist-buttons Button.drop-target { background: #dbeafe; color: #111111; text-style: bold; }
         #playlist-buttons Button.new-playlist-link { color: #555555; text-style: underline; margin-top: 1; }
         #library { width: 1fr; border: solid #777777; border-left: none; }
+        #lyrics-tab { width: 3; min-width: 3; max-width: 3; height: 8; margin-top: 1; padding: 0; border: none; background: #eeeeea; color: #222222; content-align: center middle; text-style: bold; }
+        #lyrics-tab.open { background: #222222; color: #ffffff; }
         #lyrics-resizer { display: none; width: 1; min-width: 1; height: 1fr; }
         #lyrics-panel { display: none; width: 34; min-width: 8; border: solid #777777; border-left: none; background: #fafaf7; }
         #workspace.lyrics-open #library { border-right: none; }
@@ -8962,7 +8974,8 @@ if TEXTUAL_AVAILABLE:
             self._drag_target_playlist = None
             self._drag_badge_width = 8
             self._lyrics_token = None
-            self._lyrics_dismissed_token = None
+            self._lyrics_requested_token = None
+            self._lyrics_enabled = False
             self._lyrics_width = None
             self._playlist_width = None
 
@@ -9011,6 +9024,7 @@ if TEXTUAL_AVAILABLE:
                         yield Button("Apple Radio", id="apple-radio")
                         yield Button("YT Preview", id="yt-preview")
                         yield Button("Cancel", id="cancel")
+                yield Button("L\ny\nr\ni\nc\ns", id="lyrics-tab")
                 yield LyricsResizeHandle(id="lyrics-resizer")
                 with Vertical(id="lyrics-panel"):
                     with Horizontal(id="lyrics-header"):
@@ -9030,6 +9044,15 @@ if TEXTUAL_AVAILABLE:
                 self.notify(f"Audio initialization failed: {exc}", severity="error")
                 self.exit(message=str(exc))
                 return
+            saved_widths = self.player.layout_widths
+            self._playlist_width = saved_widths.get("playlists")
+            self._lyrics_width = saved_widths.get("lyrics")
+            if self._playlist_width is not None:
+                self.query_one("#playlists", Vertical).styles.width = self._playlist_width
+            if self._lyrics_width is not None:
+                self.query_one("#lyrics-panel", Vertical).styles.width = self._lyrics_width
+            self.call_after_refresh(self._clamp_playlist_sidebar_width)
+            self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             # Background completion events need their pending actions handled
             # immediately; waiting for the next periodic tick adds silence
             # between tracks. tick() still performs the lightweight refresh.
@@ -9060,18 +9083,20 @@ if TEXTUAL_AVAILABLE:
                 self.call_after_refresh(
                     lambda: self.refresh_ui(rebuild_table=True)
                 )
-            if self._lyrics_width is not None:
-                self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             if self._playlist_width is not None:
                 self.call_after_refresh(self._clamp_playlist_sidebar_width)
+            self.call_after_refresh(self._clamp_lyrics_sidebar_width)
 
-        def resize_playlist_sidebar(self, requested_width):
+        def resize_playlist_sidebar(self, requested_width, persist=False):
             """Resize the playlist sidebar while preserving the other panes."""
             playlists = self.query_one("#playlists", Vertical)
             minimum, maximum = self._playlist_width_limits()
             width = max(minimum, min(maximum, round(requested_width)))
             self._playlist_width = width
             playlists.styles.width = width
+            if persist and self.player:
+                self.player.layout_widths["playlists"] = width
+                self.player._save_cache()
             self.call_after_refresh(self._fit_table_columns)
 
         def _playlist_width_limits(self):
@@ -9083,21 +9108,29 @@ if TEXTUAL_AVAILABLE:
                     self.query_one("#lyrics-panel", Vertical).region.width + 1
                 )
             # Account for the playlist divider and leave a useful song table.
-            available = workspace.content_region.width - lyrics_width - 1 - 30
+            available = workspace.content_region.width - lyrics_width - 3 - 1 - 30
             minimum = min(14, max(8, available))
             maximum = max(minimum, min(42, available))
             return minimum, maximum
 
+        def _workspace_width_for_terminal(self):
+            width = self.screen.size.width
+            return max(0, width - (0 if width < 82 else 6))
+
         def _clamp_playlist_sidebar_width(self):
             if self._playlist_width is None:
                 return
-            minimum, maximum = self._playlist_width_limits()
+            # Temporary terminal-size clamping must give the playlist its
+            # preferred width before it allocates the remainder to lyrics.
+            reserved_lyrics = 9 if self._lyrics_enabled else 0
+            available = self._workspace_width_for_terminal() - 3 - 1 - 16 - reserved_lyrics
+            minimum = min(14, max(8, available))
+            maximum = max(minimum, min(42, available))
             width = max(minimum, min(maximum, self._playlist_width))
-            self._playlist_width = width
             self.query_one("#playlists", Vertical).styles.width = width
             self._fit_table_columns()
 
-        def resize_lyrics_sidebar(self, screen_x):
+        def resize_lyrics_sidebar(self, screen_x, persist=False):
             """Resize the right sidebar from its left-hand drag handle."""
             panel = self.query_one("#lyrics-panel", Vertical)
             minimum, maximum = self._lyrics_width_limits()
@@ -9105,26 +9138,30 @@ if TEXTUAL_AVAILABLE:
             width = max(minimum, min(maximum, width))
             self._lyrics_width = width
             panel.styles.width = width
+            if persist and self.player:
+                self.player.layout_widths["lyrics"] = width
+                self.player._save_cache()
             self.call_after_refresh(self._refit_resized_table)
 
         def _lyrics_width_limits(self):
             """Keep both lyrics and library usable at the current terminal size."""
-            workspace = self.query_one("#workspace", Horizontal)
             left_width = self.query_one("#playlists", Vertical).region.width
             preferred_minimum = 18 if self.screen.size.width < 82 else 22
             # Leave at least 16 cells for the song table. On exceptionally
             # tiny terminals the sidebar may shrink as far as eight cells.
-            available = max(8, workspace.region.width - left_width - 16)
+            available = max(
+                8, self._workspace_width_for_terminal() - left_width - 3 - 1 - 16
+            )
             minimum = min(preferred_minimum, available)
             maximum = max(minimum, min(64, available))
             return minimum, maximum
 
         def _clamp_lyrics_sidebar_width(self):
-            if self._lyrics_width is None:
-                return
             minimum, maximum = self._lyrics_width_limits()
-            width = max(minimum, min(maximum, self._lyrics_width))
-            self._lyrics_width = width
+            preferred = self._lyrics_width
+            if preferred is None:
+                preferred = self.query_one("#lyrics-panel", Vertical).region.width or 34
+            width = max(minimum, min(maximum, preferred))
             self.query_one("#lyrics-panel", Vertical).styles.width = width
             self._refit_resized_table()
 
@@ -9344,7 +9381,7 @@ if TEXTUAL_AVAILABLE:
                 self._refresh_duration_cells(duration_updates)
 
         def _sync_lyrics_panel(self):
-            """Open and update the right sidebar for the current local song."""
+            """Update lyrics only while the user has opened the sidebar."""
             p = self.player
             if not p:
                 return
@@ -9353,17 +9390,18 @@ if TEXTUAL_AVAILABLE:
             workspace = self.query_one("#workspace", Horizontal)
             if token != self._lyrics_token:
                 self._lyrics_token = token
-                self._lyrics_dismissed_token = None
-                p.request_lyrics(name)
-                self.call_after_refresh(self._refit_resized_table)
-            visible = token is not None and token != self._lyrics_dismissed_token
+            visible = self._lyrics_enabled
             visibility_changed = workspace.has_class("lyrics-open") != visible
             workspace.set_class(visible, "lyrics-open")
-            if visibility_changed and self._playlist_width is not None:
-                self.call_after_refresh(self._clamp_playlist_sidebar_width)
+            self.query_one("#lyrics-tab", Button).set_class(visible, "open")
+            if visibility_changed:
+                self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             if not visible:
                 return
-            self.query_one("#lyrics-track", Static).update(Text(name))
+            if token != self._lyrics_requested_token:
+                self._lyrics_requested_token = token
+                p.request_lyrics(name)
+            self.query_one("#lyrics-track", Static).update(Text(name or "No local song playing"))
             source = Text()
             if p.lyrics_source:
                 source.append("Source: ")
@@ -9375,8 +9413,19 @@ if TEXTUAL_AVAILABLE:
                 else:
                     source.append(p.lyrics_source)
             self.query_one("#lyrics-source", Static).update(source)
-            content = p.lyrics_text or p.lyrics_status or "Finding lyrics…"
+            content = (
+                p.lyrics_text or p.lyrics_status
+                or ("Finding lyrics…" if name else "Play a local MP3 to see lyrics.")
+            )
             self.query_one("#lyrics-content", Static).update(Text(content))
+
+        def toggle_lyrics_panel(self):
+            self._lyrics_enabled = not self._lyrics_enabled
+            if not self._lyrics_enabled:
+                self._lyrics_requested_token = None
+                self.player.request_lyrics("")
+            self._sync_lyrics_panel()
+            self.call_after_refresh(self._refit_resized_table)
 
         def _refresh_duration_cells(self, names):
             if not names:
@@ -10039,10 +10088,8 @@ if TEXTUAL_AVAILABLE:
                 p._refresh_library()
                 self.refresh_playlists()
                 self.refresh_ui(rebuild_table=True)
-            elif button_id == "lyrics-close":
-                self._lyrics_dismissed_token = self._lyrics_token
-                self.query_one("#workspace", Horizontal).remove_class("lyrics-open")
-                self.call_after_refresh(self._refit_resized_table)
+            elif button_id in {"lyrics-close", "lyrics-tab"}:
+                self.toggle_lyrics_panel()
             elif button_id == "help-link":
                 self.action_show_help()
             elif button_id == "apple-radio":

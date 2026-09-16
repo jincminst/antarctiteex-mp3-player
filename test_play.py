@@ -1697,7 +1697,7 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     app.player._all_songs_set.add("example")
                     app.player._playback_id += 1
                     with mock.patch.object(app.player, "request_lyrics"):
-                        app._sync_lyrics_panel()
+                        await pilot.click("#lyrics-tab")
                     await pilot.pause()
                     app.resize_playlist_sidebar(42)
                     await pilot.pause()
@@ -1705,7 +1705,7 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertGreaterEqual(library.region.width, 30)
                     self.assertLess(sidebar.region.width, 42)
 
-    async def test_lyrics_sidebar_opens_for_playback_and_can_be_closed(self):
+    async def test_lyrics_sidebar_only_fetches_when_opened_and_preserves_playlists(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "[OR] vampire.mp3").touch()
             with mock.patch.object(play.Player, "start_background_services"):
@@ -1727,6 +1727,10 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     ) as request:
                         app.refresh_ui()
                         await pilot.pause()
+                        request.assert_not_called()
+                        self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
+                        await pilot.click("#lyrics-tab")
+                        await pilot.pause()
 
                     request.assert_called_once_with("[OR] vampire")
                     self.assertTrue(app.query_one("#workspace").has_class("lyrics-open"))
@@ -1735,6 +1739,8 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     )
                     panel = app.query_one("#lyrics-panel")
                     resizer = app.query_one("#lyrics-resizer")
+                    playlists = app.query_one("#playlists")
+                    playlist_width = playlists.region.width
                     self.assertGreater(resizer.region.width, 0)
                     self.assertNotEqual(
                         app.query_one("#library").styles.border_right[0], "solid"
@@ -1743,9 +1749,11 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     app.resize_lyrics_sidebar(right_edge - 48)
                     await pilot.pause()
                     self.assertEqual(panel.region.width, 48)
+                    self.assertEqual(playlists.region.width, playlist_width)
                     app.resize_lyrics_sidebar(right_edge - 2)
                     await pilot.pause()
                     self.assertEqual(panel.region.width, 22)
+                    self.assertEqual(playlists.region.width, playlist_width)
                     await pilot.click("#lyrics-close")
                     await pilot.pause()
                     self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
@@ -1753,6 +1761,47 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         app.query_one("#library").styles.border_right[0], "solid"
                     )
+                    player._playback_id += 1
+                    with mock.patch.object(player, "request_lyrics") as request:
+                        app.refresh_ui()
+                        await pilot.pause()
+                        request.assert_not_called()
+                        await pilot.click("#lyrics-tab")
+                        await pilot.pause()
+                        request.assert_called_once_with("[OR] vampire")
+
+    async def test_sidebar_widths_reload_from_library_cache(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    app.resize_playlist_sidebar(31, persist=True)
+                    await pilot.click("#lyrics-tab")
+                    await pilot.pause()
+                    panel = app.query_one("#lyrics-panel")
+                    app.resize_lyrics_sidebar(panel.region.right - 45, persist=True)
+                    await pilot.pause()
+                    self.assertEqual(app.query_one("#playlists").region.width, 31)
+                    self.assertEqual(panel.region.width, 45)
+
+                cache = json.loads(Path(folder, play.CACHE_FILE).read_text())
+                self.assertEqual(cache["settings"]["layout"], {
+                    "playlists": 31, "lyrics": 45,
+                })
+
+                reopened = play.MusicApp(folder)
+                async with reopened.run_test(size=(120, 28)) as pilot:
+                    await pilot.pause()
+                    self.assertEqual(reopened.query_one("#playlists").region.width, 31)
+                    await pilot.click("#lyrics-tab")
+                    await pilot.pause()
+                    self.assertEqual(reopened.query_one("#lyrics-panel").region.width, 45)
+                    await pilot.resize_terminal(80, 28)
+                    await pilot.pause()
+                    self.assertLess(reopened.query_one("#lyrics-panel").region.width, 45)
+                    await pilot.resize_terminal(120, 28)
+                    await pilot.pause()
+                    self.assertEqual(reopened.query_one("#lyrics-panel").region.width, 45)
 
     async def test_modals_and_main_layout_survive_extreme_resizes(self):
         with tempfile.TemporaryDirectory() as folder:
