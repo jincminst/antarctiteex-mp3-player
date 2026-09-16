@@ -126,6 +126,7 @@ YT_SEARCH_RESULT_LIMIT = 75
 YT_SEARCH_CHANNEL_LIMIT = 8
 LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
+GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
 LYRICS_CACHE_VERSION = 2
 APPLE_RADIO_STATIONS = (
@@ -1613,6 +1614,20 @@ class Player:
         tagged = re.match(r"^\[([^\]]+)\]", str(name or "").strip())
         return tagged.group(1).strip() if tagged else ""
 
+    def _playlist_artist_for_tag(self, tag):
+        """Use an artist-named tagged playlist to expand a filename alias."""
+        aliases = {"OR": "Olivia Rodrigo", "21P": "Twenty One Pilots"}
+        tag = str(tag or "").strip()
+        for name, playlist_tag in getattr(self, "playlist_tags", {}).items():
+            if str(playlist_tag).casefold() != tag.casefold():
+                continue
+            if (
+                self._artist_matches_tag(name, tag)
+                or name.casefold() == aliases.get(tag.upper(), "").casefold()
+            ):
+                return name
+        return aliases.get(tag.upper(), "")
+
     @staticmethod
     def _artist_matches_tag(artist, tag):
         """Return whether an artist name matches a bracketed artist tag."""
@@ -1749,6 +1764,10 @@ class Player:
             "album": "",
             "lyrics": "",
         }
+        if metadata["artist_tag"]:
+            metadata["artist_hint"] = self._playlist_artist_for_tag(
+                metadata["artist_tag"]
+            )
         path = self._song_path(name)
         if not shutil.which("ffprobe") or not os.path.exists(path):
             return metadata
@@ -1785,15 +1804,17 @@ class Player:
         return metadata
 
     @staticmethod
-    def _fetch_json(url):
+    def _fetch_json(url, headers=None):
+        request_headers = {
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://genius.com/",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        }
+        request_headers.update(headers or {})
         request = urllib.request.Request(
             url,
-            headers={
-                "Accept": "application/json",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://genius.com/",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            },
+            headers=request_headers,
         )
         with urllib.request.urlopen(request, timeout=LYRICS_HTTP_TIMEOUT_S) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -1814,15 +1835,20 @@ class Player:
         """Find the best exact-title Genius result for the known artist."""
         tag = str(metadata.get("artist_tag") or "").strip()
         known_artist = str(metadata.get("artist") or "").strip()
+        artist_hint = str(metadata.get("artist_hint") or "").strip()
         title = str(metadata.get("title") or "").strip()
-        if not title or not (tag or known_artist):
+        if not title or not (tag or known_artist or artist_hint):
             return None
 
         # Embedded artist metadata is normally a much better query than an
         # abbreviated filename tag such as OR or 21P. Retry with the tag only
         # when the stronger query did not produce a verified result.
         query_artists = []
-        for artist in (known_artist, tag):
+        preferred_artist = (
+            known_artist if known_artist.casefold() != tag.casefold()
+            else artist_hint or known_artist
+        )
+        for artist in (preferred_artist, known_artist, artist_hint, tag):
             if artist and self._normalized_lyrics_identity(artist) not in {
                 self._normalized_lyrics_identity(item) for item in query_artists
             }:
@@ -1830,11 +1856,18 @@ class Player:
 
         candidates = {}
         search_failed = False
+        token = os.environ.get("GENIUS_ACCESS_TOKEN", "").strip()
         for query_title in self._lyrics_title_variants(title):
             for query_artist in query_artists:
                 query = urllib.parse.urlencode({"q": f"{query_title} {query_artist}"})
                 try:
-                    payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
+                    if token:
+                        payload = self._fetch_json(
+                            f"{GENIUS_OFFICIAL_SEARCH_URL}?{query}",
+                            {"Authorization": f"Bearer {token}"},
+                        )
+                    else:
+                        payload = self._fetch_json(f"{GENIUS_SEARCH_URL}?{query}")
                 except Exception:
                     search_failed = True
                     break
@@ -1855,10 +1888,20 @@ class Player:
                         self._normalized_lyrics_identity(artist)
                         == self._normalized_lyrics_identity(known_artist)
                     ) if known_artist else False
+                    artist_hint_match = bool(artist_hint) and (
+                        not known_artist or known_artist.casefold() == tag.casefold()
+                    ) and (
+                        self._normalized_lyrics_identity(artist)
+                        == self._normalized_lyrics_identity(artist_hint)
+                    )
                     artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
-                    if not page_url or not title_score or not (artist_exact or artist_tag_match):
+                    if not page_url or not title_score or not (
+                        artist_exact or artist_hint_match or artist_tag_match
+                    ):
                         continue
-                    score = title_score + (50 if artist_exact else 35)
+                    score = title_score + (
+                        50 if artist_exact or artist_hint_match else 35
+                    )
                     previous = candidates.get(page_url)
                     if previous is None or score > previous[0]:
                         candidates[page_url] = (score, result)
@@ -1900,6 +1943,13 @@ class Player:
 
     def _fetch_lrclib_lyrics(self, metadata):
         artist = metadata.get("artist", "").strip()
+        hint = str(metadata.get("artist_hint") or "").strip()
+        if hint and (
+            not artist
+            or artist.casefold()
+            == str(metadata.get("artist_tag") or "").casefold()
+        ):
+            artist = hint
         title = metadata.get("title", "").strip()
         if not title:
             return None

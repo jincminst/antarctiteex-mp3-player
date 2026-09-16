@@ -64,16 +64,24 @@ The player stores song metadata, playlists, settings, and analysis in a single
 ## Lyrics
 
 Starting a local song opens a scrollable lyrics sidebar on the right. The
-player first uses lyrics embedded in the MP3, then queries LRCLIB in the
-background. Successful results are saved in `.mp3cache.json`, so replaying a
-song does not make another network request. Section headings supplied by the
-source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain visible. Drag the
-sidebar's left edge to resize it.
+player searches Genius for a verified song and artist, then reads the lyrics
+from its song page. If that fails, it tries lyrics embedded in the MP3 and
+then LRCLIB. Genius's official API returns song metadata and page URLs, not
+lyrics text. Set `GENIUS_ACCESS_TOKEN` to a Genius API client access token to
+use its official search endpoint; without a token, the player uses Genius's
+public website search. Successful results are saved in `.mp3cache.json`, so
+replaying a song does not make another network request. Section headings
+supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
+visible. Drag the sidebar's left edge to resize it.
 
 Accurate artist and title metadata gives the best matches. The player reads
 MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or
 `Artist - Song Title.mp3`. You can close the sidebar with its `×` button; it
 opens again when another song starts.
+
+For abbreviated artist tags, an artist-named playlist with the same tag can
+help identify the artist. `[OR]` also resolves to Olivia Rodrigo and `[21P]`
+to Twenty One Pilots.
 
 ## Artist Tags and Automatic Playlists
 

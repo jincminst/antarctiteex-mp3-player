@@ -1145,6 +1145,67 @@ class PureHelperTests(unittest.TestCase):
 
 
 class LyricsTests(unittest.TestCase):
+    def test_playlist_artist_name_expands_tags_and_known_aliases(self):
+        player = play.Player.__new__(play.Player)
+        player.playlist_tags = {
+            "Olivia Rodrigo": "OR",
+            "Twenty One Pilots": "21P",
+            "My Favorites": "MF",
+        }
+        self.assertEqual(player._playlist_artist_for_tag("OR"), "Olivia Rodrigo")
+        self.assertEqual(player._playlist_artist_for_tag("21P"), "Twenty One Pilots")
+        self.assertEqual(player._playlist_artist_for_tag("X"), "")
+
+    def test_filename_lyrics_metadata_includes_playlist_artist_hint(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/unused"
+        player.playlist_tags = {"Twenty One Pilots": "21P"}
+        with mock.patch.object(play.shutil, "which", return_value=None):
+            metadata = player._read_audio_lyrics_metadata("[21P] Stressed Out")
+        self.assertEqual(metadata["artist"], "21P")
+        self.assertEqual(metadata["artist_hint"], "Twenty One Pilots")
+
+    def test_playlist_artist_hint_is_used_for_lyrics_query(self):
+        player = play.Player.__new__(play.Player)
+        search = {"response": {"hits": [{"result": {
+            "title": "Stressed Out",
+            "url": "https://genius.com/Twenty-one-pilots-stressed-out-lyrics",
+            "primary_artist": {"name": "Twenty One Pilots"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.dict(play.os.environ, {"GENIUS_ACCESS_TOKEN": ""}),
+            mock.patch.object(player, "_fetch_json", return_value=search) as fetch,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "21P", "artist_tag": "21P",
+                "artist_hint": "Twenty One Pilots", "title": "Stressed Out",
+            })
+        self.assertIn("Twenty+One+Pilots", fetch.call_args.args[0])
+        self.assertEqual(result["source"], "Genius")
+
+    def test_official_genius_search_uses_token_when_available(self):
+        player = play.Player.__new__(play.Player)
+        search = {"response": {"hits": [{"result": {
+            "title": "vampire",
+            "url": "https://genius.com/Olivia-rodrigo-vampire-lyrics",
+            "primary_artist": {"name": "Olivia Rodrigo"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.dict(play.os.environ, {"GENIUS_ACCESS_TOKEN": "secret"}),
+            mock.patch.object(player, "_fetch_json", return_value=search) as fetch,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "OR", "artist_tag": "OR",
+                "artist_hint": "Olivia Rodrigo", "title": "vampire",
+            })
+        self.assertTrue(fetch.call_args.args[0].startswith(play.GENIUS_OFFICIAL_SEARCH_URL))
+        self.assertEqual(fetch.call_args.args[1], {"Authorization": "Bearer secret"})
+        self.assertEqual(result["text"], "[Verse 1]\nWords")
+
     def test_filename_metadata_prefers_artist_tag_then_dash_format(self):
         self.assertEqual(
             play.Player._lyrics_metadata_from_filename("[OR] vampire"),
