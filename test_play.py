@@ -1145,6 +1145,45 @@ class PureHelperTests(unittest.TestCase):
 
 
 class LyricsTests(unittest.TestCase):
+    def test_lyrics_filter_censors_swears_but_preserves_hell(self):
+        player = play.Player.__new__(play.Player)
+        player._lyrics_request_id = 1
+        player.lyrics_song = "Example"
+        player._lyrics_loading = True
+        player._lyrics_memory_cache = {}
+        player.meta = {}
+        player._wake_ui = lambda: None
+
+        player._finish_lyrics_request(
+            1, "Example", {"text": "[Verse 1]\nHell is a place. Damn, that's shit.",
+                           "source": "Genius"}
+        )
+
+        self.assertEqual(
+            player.lyrics_text, "[Verse 1]\nHell is a place. ****, that's ****."
+        )
+        self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
+
+    def test_existing_cached_lyrics_are_censored_when_loaded(self):
+        player = play.Player.__new__(play.Player)
+        player._all_songs_set = {"Example"}
+        player._lyrics_request_id = 0
+        player.lyrics_song = ""
+        player._lyrics_loading = False
+        player.lyrics_text = ""
+        player._lyrics_memory_cache = {}
+        player.meta = {"Example": {"lyrics_cache": {
+            "text": "What the hell? This is shit.",
+            "source": "LRCLIB",
+            "cache_version": play.LYRICS_CACHE_VERSION,
+        }}}
+        player._wake_ui = lambda: None
+
+        player.request_lyrics("Example")
+
+        self.assertEqual(player.lyrics_text, "What the hell? This is ****.")
+        self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
+
     def test_playlist_artist_name_expands_tags_and_known_aliases(self):
         player = play.Player.__new__(play.Player)
         player.playlist_tags = {

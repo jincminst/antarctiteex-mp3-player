@@ -20,6 +20,9 @@ import unicodedata
 from types import SimpleNamespace
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from better_profanity import profanity
+
+profanity.load_censor_words(whitelist_words=["hell"])
 
 try:
     from rich.cells import cell_len, set_cell_size
@@ -2118,7 +2121,9 @@ class Player:
         self._lyrics_loading = False
         if result and result.get("text"):
             result = {
-                "text": self._clean_lyrics_text(result.get("text")),
+                "text": profanity.censor(
+                    self._clean_lyrics_text(result.get("text"))
+                ),
                 "source": str(result.get("source") or "Lyrics"),
                 "url": str(result.get("url") or ""),
                 "cache_version": LYRICS_CACHE_VERSION,

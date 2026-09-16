@@ -8,9 +8,10 @@ resolution-markers = [
 
 [[package]]
 name = "antarctiteex-mp3-player"
-version = "0.1.51"
+version = "0.1.52"
 source = { editable = "." }
 dependencies = [
+    { name = "better-profanity" },
     { name = "pygame" },
     { name = "pynput" },
     { name = "send2trash" },
@@ -20,11 +21,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "better-profanity", specifier = ">=0.7,<0.8" },
     { name = "pygame", specifier = ">=2.5" },
     { name = "pynput", specifier = ">=1.7" },
     { name = "send2trash", specifier = ">=1.8" },
     { name = "textual", specifier = ">=0.50" },
     { name = "yt-dlp" },
+]
+
+[[package]]
+name = "better-profanity"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/4a/52966c1c883819f0b48540312a4a7f63b5c49f4e5b1a10838ae7f06ebb3c/better_profanity-0.7.0.tar.gz", hash = "sha256:8a6fdc8606d7471e7b5f6801917eca98ec211098262e82f62da4f5de3a73145b", size = 29977, upload-time = "2020-11-02T10:49:57.54Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/dd/0b074d89e903cc771721cde2c4bf3d8c9d114b5bd791af5c62bcf5fb9459/better_profanity-0.7.0-py3-none-any.whl", hash = "sha256:bd4c529ea6aa2db1aaa50524be1ed14d0fe5c664f1fd88c8bc388c7e9f9f00e8", size = 46104, upload-time = "2020-11-02T10:49:56.066Z" },
 ]
 
 [[package]]

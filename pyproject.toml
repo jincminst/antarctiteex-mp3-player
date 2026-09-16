@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "antarctiteex-mp3-player"
-version = "0.1.51"
+version = "0.1.52"
 description = "A terminal MP3 player with playlists, lyrics, YouTube tools, and Apple Music radio"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "better-profanity>=0.7,<0.8",
     "pygame>=2.5",
     "pynput>=1.7",
     "Send2Trash>=1.8",
