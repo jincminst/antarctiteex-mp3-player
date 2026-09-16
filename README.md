@@ -81,8 +81,8 @@ MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or
 opens again when another song starts.
 
 For abbreviated artist tags, an artist-named playlist with the same tag can
-help identify the artist. `[OR]` also resolves to Olivia Rodrigo and `[21P]`
-to Twenty One Pilots.
+help identify the artist. `[OR]` also resolves to Olivia Rodrigo, `[21P]` to
+Twenty One Pilots, and `[AG]` to Ariana Grande.
 
 ## Artist Tags and Automatic Playlists
 

@@ -1193,7 +1193,30 @@ class LyricsTests(unittest.TestCase):
         }
         self.assertEqual(player._playlist_artist_for_tag("OR"), "Olivia Rodrigo")
         self.assertEqual(player._playlist_artist_for_tag("21P"), "Twenty One Pilots")
+        self.assertEqual(player._playlist_artist_for_tag("AG"), "Ariana Grande")
         self.assertEqual(player._playlist_artist_for_tag("X"), "")
+
+    def test_ag_freak_uses_artist_alias_and_verified_genius_result(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/unused"
+        player.playlist_tags = {}
+        search = {"response": {"hits": [{"result": {
+            "title": "freak",
+            "url": "https://genius.com/Ariana-grande-freak-lyrics",
+            "primary_artist": {"name": "Ariana Grande"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.object(play.shutil, "which", return_value=None),
+            mock.patch.dict(play.os.environ, {"GENIUS_ACCESS_TOKEN": ""}),
+            mock.patch.object(player, "_fetch_json", return_value=search) as fetch,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            metadata = player._read_audio_lyrics_metadata("[AG] freak")
+            result = player._fetch_genius_lyrics(metadata)
+        self.assertEqual(metadata["artist_hint"], "Ariana Grande")
+        self.assertIn("freak+Ariana+Grande", fetch.call_args.args[0])
+        self.assertEqual(result["url"], "https://genius.com/Ariana-grande-freak-lyrics")
 
     def test_filename_lyrics_metadata_includes_playlist_artist_hint(self):
         player = play.Player.__new__(play.Player)

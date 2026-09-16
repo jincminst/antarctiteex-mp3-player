@@ -1619,7 +1619,11 @@ class Player:
 
     def _playlist_artist_for_tag(self, tag):
         """Use an artist-named tagged playlist to expand a filename alias."""
-        aliases = {"OR": "Olivia Rodrigo", "21P": "Twenty One Pilots"}
+        aliases = {
+            "OR": "Olivia Rodrigo",
+            "21P": "Twenty One Pilots",
+            "AG": "Ariana Grande",
+        }
         tag = str(tag or "").strip()
         for name, playlist_tag in getattr(self, "playlist_tags", {}).items():
             if str(playlist_tag).casefold() != tag.casefold():
