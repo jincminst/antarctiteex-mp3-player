@@ -8972,7 +8972,7 @@ if TEXTUAL_AVAILABLE:
         #playlist-buttons Button.active-playlist.playback-source { background: #222222; color: #ffffff; text-style: bold; }
         #playlist-buttons Button.drop-target { background: #dbeafe; color: #111111; text-style: bold; }
         #playlist-buttons Button.new-playlist-link { color: #555555; text-style: underline; margin-top: 1; }
-        #library { width: 1fr; border: solid #777777; border-left: none; }
+        #library { width: 1fr; height: 100%; border: solid #777777; border-left: none; }
         #lyrics-tab { width: 3; min-width: 3; max-width: 3; height: 8; margin-top: 1; padding: 0; border: none; background: #eeeeea; color: #222222; content-align: center middle; text-style: bold; }
         #workspace.lyrics-open #lyrics-tab { display: none; }
         #workspace.youtube-preview #lyrics-tab { display: none; }

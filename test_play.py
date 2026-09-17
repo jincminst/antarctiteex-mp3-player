@@ -1854,6 +1854,28 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertGreaterEqual(library.region.width, 30)
                     self.assertLess(sidebar.region.width, 42)
 
+    async def test_library_border_fills_workspace_with_lyrics_closed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 30)) as pilot:
+                    for width, height in ((100, 30), (80, 24), (40, 12)):
+                        await pilot.resize_terminal(width, height)
+                        await pilot.pause()
+                        workspace = app.query_one("#workspace")
+                        library = app.query_one("#library")
+                        self.assertEqual(library.region.bottom, workspace.content_region.bottom)
+                        playlists = app.query_one("#playlists")
+                        if playlists.region.height:
+                            self.assertEqual(library.region.bottom, playlists.region.bottom)
+                    await pilot.resize_terminal(100, 30)
+                    await pilot.click("#lyrics-tab")
+                    await pilot.pause()
+                    self.assertEqual(
+                        app.query_one("#library").region.bottom,
+                        app.query_one("#lyrics-panel").region.bottom,
+                    )
+
     async def test_lyrics_sidebar_only_fetches_when_opened_and_preserves_playlists(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "[OR] vampire.mp3").touch()
