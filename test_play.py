@@ -138,6 +138,29 @@ class FunctionInventoryTests(unittest.TestCase):
 
 
 class InitializationIntegrationTests(unittest.TestCase):
+    def test_restored_shuffle_song_has_a_playback_queue_without_refresh(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "Track.mp3").touch()
+            Path(folder, play.CACHE_FILE).write_text(json.dumps({
+                "songs": {},
+                "playlists": {"Mix": ["Track"]},
+                "settings": {"session": {
+                    "song": "Track", "playlist": "Mix", "play_mode": "shuffle",
+                }},
+            }))
+            with (
+                mock.patch.object(play.Player, "_restore_saved_session", return_value=True),
+                mock.patch.object(play.Player, "_start_duration_loader"),
+                mock.patch.object(play.Player, "_watch_playback"),
+            ):
+                player = play.Player(folder=folder)
+            try:
+                self.assertEqual(player.play_mode, "shuffle")
+                self.assertEqual(player.play_tab, "Mix")
+                self.assertEqual(player.play_pool, ["Track"])
+            finally:
+                player._shutdown_audio()
+
     def test_canceling_radio_restores_local_song_and_position(self):
         with tempfile.TemporaryDirectory() as folder:
             player = play.Player(folder=folder)
@@ -860,6 +883,7 @@ class PureHelperTests(unittest.TestCase):
         player.paused = False
         player._youtube_temp_path = None
         player._song_len_ms = 1000
+        player._play_start = 1
         player.play_mode = "shuffle"
         player._playback_id = 1
         player._completion_suppressed_until = 0
@@ -880,6 +904,35 @@ class PureHelperTests(unittest.TestCase):
 
         self.assertEqual(player._pending_shuffle_next, "next")
         player._wake_ui.assert_called_once_with()
+
+    def test_finished_track_with_unknown_duration_still_advances(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.current = "finished"
+        player.paused = False
+        player._youtube_temp_path = None
+        player._song_len_ms = 0
+        player._play_start = 1
+        player.play_mode = "shuffle"
+        player._playback_id = 1
+        player._completion_suppressed_until = 0
+        player._pending_shuffle_next = None
+        player.play_pool = ["next"]
+        player._queue_play_inc = mock.Mock()
+        player._weighted_shuffle_choice = mock.Mock(return_value="next")
+        player._wake_ui = mock.Mock(
+            side_effect=lambda: setattr(player, "running", False)
+        )
+
+        with (
+            mock.patch.object(play.time, "sleep"),
+            mock.patch.object(play.time, "monotonic", return_value=10),
+            mock.patch.object(play.pygame.mixer.music, "get_busy", return_value=False),
+        ):
+            player._watch_playback()
+
+        self.assertEqual(player._pending_shuffle_next, "next")
 
     def test_text_editor_navigation_deletion_and_kill_yank(self):
         player = bare_player()

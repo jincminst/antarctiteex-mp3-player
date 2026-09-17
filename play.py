@@ -300,6 +300,7 @@ class Player:
         saved_playlist = saved_session.get("playlist")
         if saved_playlist in self.tab_names:
             self.active_tab = self.tab_names.index(saved_playlist)
+            self.play_tab = saved_playlist
 
         self.ctx_menu_open = False
         self.ctx_menu_type = None
@@ -476,6 +477,13 @@ class Player:
             self._setup_curses()
             self._layout()
         self._rebuild()
+        self._rebuild_play_pool()
+        if (
+            saved_session.get("song") in self._all_songs_set
+            and saved_session["song"] not in self.play_pool
+        ):
+            self.play_tab = "All"
+            self._rebuild_play_pool()
         self._restore_saved_session()
         self._start_duration_loader()
 
@@ -2636,15 +2644,17 @@ class Player:
                 playback_id = self._playback_id
                 if time.monotonic() < self._completion_suppressed_until:
                     continue
-                if current in ("None", "Loading...") or self.paused:
+                if (
+                    current in ("None", "Loading...")
+                    or self.paused
+                    or self._play_start <= 0
+                ):
                     continue
                 if self._is_youtube_preview_current():
                     if not pygame.mixer.music.get_busy():
                         self._pending_preview_cleanup = True
                         self.dirty = True
                         self._wake_ui()
-                    continue
-                if self._song_len_ms <= 0:
                     continue
                 if self.play_mode == "shuffle":
                     if not pygame.mixer.music.get_busy():
