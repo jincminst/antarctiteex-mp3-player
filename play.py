@@ -8975,6 +8975,7 @@ if TEXTUAL_AVAILABLE:
         #library { width: 1fr; border: solid #777777; border-left: none; }
         #lyrics-tab { width: 3; min-width: 3; max-width: 3; height: 8; margin-top: 1; padding: 0; border: none; background: #eeeeea; color: #222222; content-align: center middle; text-style: bold; }
         #workspace.lyrics-open #lyrics-tab { display: none; }
+        #workspace.youtube-preview #lyrics-tab { display: none; }
         #lyrics-resizer { display: none; width: 1; min-width: 1; height: 1fr; }
         #lyrics-panel { display: none; width: 34; min-width: 8; border: solid #777777; border-left: none; background: #fafaf7; }
         #workspace.lyrics-open #library { border-right: none; }
@@ -9191,7 +9192,10 @@ if TEXTUAL_AVAILABLE:
                     self.query_one("#lyrics-panel", Vertical).region.width + 1
                 )
             # Account for the playlist divider and leave a useful song table.
-            tab_width = 0 if workspace.has_class("lyrics-open") else 3
+            tab_width = 0 if (
+                workspace.has_class("lyrics-open")
+                or workspace.has_class("youtube-preview")
+            ) else 3
             available = workspace.content_region.width - lyrics_width - tab_width - 1 - 30
             minimum = min(14, max(8, available))
             maximum = max(minimum, min(42, available))
@@ -9206,8 +9210,12 @@ if TEXTUAL_AVAILABLE:
                 return
             # Temporary terminal-size clamping must give the playlist its
             # preferred width before it allocates the remainder to lyrics.
-            reserved_lyrics = 9 if self._lyrics_enabled else 0
-            tab_width = 0 if self._lyrics_enabled else 3
+            preview_active = self.query_one("#workspace", Horizontal).has_class(
+                "youtube-preview"
+            )
+            lyrics_visible = self._lyrics_enabled and not preview_active
+            reserved_lyrics = 9 if lyrics_visible else 0
+            tab_width = 0 if lyrics_visible or preview_active else 3
             available = self._workspace_width_for_terminal() - tab_width - 1 - 16 - reserved_lyrics
             minimum = min(14, max(8, available))
             maximum = max(minimum, min(42, available))
@@ -9470,17 +9478,26 @@ if TEXTUAL_AVAILABLE:
             p = self.player
             if not p:
                 return
-            name = p.current if p.current in p._all_songs_set else ""
+            preview_active = p._youtube_loading or p._is_youtube_preview_current()
+            name = (
+                p.current if not preview_active and p.current in p._all_songs_set
+                else ""
+            )
             token = (name, p._playback_id) if name else None
             workspace = self.query_one("#workspace", Horizontal)
+            workspace.set_class(preview_active, "youtube-preview")
             if token != self._lyrics_token:
                 self._lyrics_token = token
-            visible = self._lyrics_enabled
+            visible = self._lyrics_enabled and not preview_active
             visibility_changed = workspace.has_class("lyrics-open") != visible
             workspace.set_class(visible, "lyrics-open")
             if visibility_changed:
                 self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             if not visible:
+                if preview_active and self._lyrics_requested_token is not None:
+                    self._lyrics_requested_token = None
+                    self._lyrics_scrolled_token = None
+                    p.request_lyrics("")
                 return
             reset_scroll = token != self._lyrics_requested_token or visibility_changed
             if token != self._lyrics_requested_token:

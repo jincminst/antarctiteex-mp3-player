@@ -1965,6 +1965,51 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.pause()
                         self.assertGreater(scroll.scroll_y, 0)
 
+    async def test_youtube_preview_hides_lyrics_and_restores_open_sidebar(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "First.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    player = app.player
+                    player.current = "First"
+                    player._playback_id += 1
+
+                    def request_lyrics(name):
+                        player.lyrics_text = "[Verse 1]\nWords" if name else ""
+                        player.lyrics_status = ""
+
+                    with mock.patch.object(
+                        player, "request_lyrics", side_effect=request_lyrics
+                    ) as request:
+                        await pilot.click("#lyrics-tab")
+                        await pilot.pause()
+                        self.assertGreater(app.query_one("#lyrics-panel").region.width, 0)
+                        self.assertEqual(request.call_args.args, ("First",))
+
+                        player._youtube_loading = True
+                        app._sync_lyrics_panel()
+                        await pilot.pause()
+                        self.assertEqual(app.query_one("#lyrics-panel").region.width, 0)
+                        self.assertEqual(app.query_one("#lyrics-tab").region.width, 0)
+                        self.assertEqual(request.call_args.args, ("",))
+                        self.assertEqual(player.lyrics_text, "")
+
+                        player._youtube_loading = False
+                        player._youtube_temp_path = "/tmp/preview.mp3"
+                        player.current = "YouTube: Example"
+                        app._sync_lyrics_panel()
+                        await pilot.pause()
+                        self.assertEqual(app.query_one("#lyrics-panel").region.width, 0)
+                        self.assertEqual(request.call_count, 2)
+
+                        player._youtube_temp_path = None
+                        player.current = "First"
+                        app._sync_lyrics_panel()
+                        await pilot.pause()
+                        self.assertGreater(app.query_one("#lyrics-panel").region.width, 0)
+                        self.assertEqual(request.call_args.args, ("First",))
+
     async def test_sidebar_widths_reload_from_library_cache(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(play.Player, "start_background_services"):
