@@ -1729,11 +1729,13 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.pause()
                         request.assert_not_called()
                         self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
+                        self.assertEqual(app.query_one("#lyrics-tab").region.width, 3)
                         await pilot.click("#lyrics-tab")
                         await pilot.pause()
 
                     request.assert_called_once_with("[OR] vampire")
                     self.assertTrue(app.query_one("#workspace").has_class("lyrics-open"))
+                    self.assertEqual(app.query_one("#lyrics-tab").region.width, 0)
                     self.assertIn(
                         "[Verse 1]", str(app.query_one("#lyrics-content").render())
                     )
@@ -1757,6 +1759,7 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.click("#lyrics-close")
                     await pilot.pause()
                     self.assertFalse(app.query_one("#workspace").has_class("lyrics-open"))
+                    self.assertEqual(app.query_one("#lyrics-tab").region.width, 3)
                     self.assertEqual(resizer.region.width, 0)
                     self.assertEqual(
                         app.query_one("#library").styles.border_right[0], "solid"

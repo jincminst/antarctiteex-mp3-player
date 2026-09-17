@@ -8892,7 +8892,7 @@ if TEXTUAL_AVAILABLE:
         #playlist-buttons Button.new-playlist-link { color: #555555; text-style: underline; margin-top: 1; }
         #library { width: 1fr; border: solid #777777; border-left: none; }
         #lyrics-tab { width: 3; min-width: 3; max-width: 3; height: 8; margin-top: 1; padding: 0; border: none; background: #eeeeea; color: #222222; content-align: center middle; text-style: bold; }
-        #lyrics-tab.open { background: #222222; color: #ffffff; }
+        #workspace.lyrics-open #lyrics-tab { display: none; }
         #lyrics-resizer { display: none; width: 1; min-width: 1; height: 1fr; }
         #lyrics-panel { display: none; width: 34; min-width: 8; border: solid #777777; border-left: none; background: #fafaf7; }
         #workspace.lyrics-open #library { border-right: none; }
@@ -9108,7 +9108,8 @@ if TEXTUAL_AVAILABLE:
                     self.query_one("#lyrics-panel", Vertical).region.width + 1
                 )
             # Account for the playlist divider and leave a useful song table.
-            available = workspace.content_region.width - lyrics_width - 3 - 1 - 30
+            tab_width = 0 if workspace.has_class("lyrics-open") else 3
+            available = workspace.content_region.width - lyrics_width - tab_width - 1 - 30
             minimum = min(14, max(8, available))
             maximum = max(minimum, min(42, available))
             return minimum, maximum
@@ -9123,7 +9124,8 @@ if TEXTUAL_AVAILABLE:
             # Temporary terminal-size clamping must give the playlist its
             # preferred width before it allocates the remainder to lyrics.
             reserved_lyrics = 9 if self._lyrics_enabled else 0
-            available = self._workspace_width_for_terminal() - 3 - 1 - 16 - reserved_lyrics
+            tab_width = 0 if self._lyrics_enabled else 3
+            available = self._workspace_width_for_terminal() - tab_width - 1 - 16 - reserved_lyrics
             minimum = min(14, max(8, available))
             maximum = max(minimum, min(42, available))
             width = max(minimum, min(maximum, self._playlist_width))
@@ -9150,7 +9152,7 @@ if TEXTUAL_AVAILABLE:
             # Leave at least 16 cells for the song table. On exceptionally
             # tiny terminals the sidebar may shrink as far as eight cells.
             available = max(
-                8, self._workspace_width_for_terminal() - left_width - 3 - 1 - 16
+                8, self._workspace_width_for_terminal() - left_width - 1 - 16
             )
             minimum = min(preferred_minimum, available)
             maximum = max(minimum, min(64, available))
@@ -9393,7 +9395,6 @@ if TEXTUAL_AVAILABLE:
             visible = self._lyrics_enabled
             visibility_changed = workspace.has_class("lyrics-open") != visible
             workspace.set_class(visible, "lyrics-open")
-            self.query_one("#lyrics-tab", Button).set_class(visible, "open")
             if visibility_changed:
                 self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             if not visible:
