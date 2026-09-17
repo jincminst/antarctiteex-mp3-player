@@ -1221,10 +1221,12 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(
             play._censor_lyrics_text(
                 "s*x, s✱x, s•x, s-x, s*xy, s✱xy, sexy, sexting, "
-                "sh✱t, b!tch; hell, shell, co-op."
+                "sh✱t, b!tch; m*th*rf**ker, f*ckin', fuckin'; "
+                "hell, shell, God, god, co-op."
             ),
             "****, ****, ****, ****, ****, ****, ****, ****, "
-            "****, ****; hell, shell, co-op.",
+            "****, ****; ****, ****, ****; "
+            "hell, shell, God, god, co-op.",
         )
 
     def test_existing_cached_lyrics_are_censored_when_loaded(self):

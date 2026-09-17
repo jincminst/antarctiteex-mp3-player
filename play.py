@@ -22,12 +22,18 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from better_profanity import profanity
 
-profanity.load_censor_words(whitelist_words=["hell"])
+profanity.load_censor_words(whitelist_words=["hell", "god"])
 profanity.add_censor_words(["sexy", "sexier", "sexiest", "sexiness", "sexting"])
+_MASKED_CENSOR_WORDS = {}
+for _word in profanity.CENSOR_WORDSET:
+    _spelling = str(_word).lower()
+    if _spelling.isalpha():
+        _MASKED_CENSOR_WORDS.setdefault(len(_spelling), set()).add(_spelling)
 
 _MASKED_WORD = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[\*✱✲✳✴✵✶✷✸✹✺✻✼✽✾•·_\-–—!]+)+[A-Za-z0-9]+(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[\*✱✲✳✴✵✶✷✸✹✺✻✼✽✾•·_\-–—!]+)+[A-Za-z0-9]+['’]?(?![A-Za-z0-9])"
 )
+_TRAILING_APOSTROPHE_WORD = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+['’](?![A-Za-z0-9])")
 _MASKED_LETTERS = str.maketrans({
     "✱": "*", "✲": "*", "✳": "*", "✴": "*", "✵": "*", "✶": "*",
     "✷": "*", "✸": "*", "✹": "*", "✺": "*", "✻": "*", "✼": "*",
@@ -39,10 +45,23 @@ _MASKED_LETTERS = str.maketrans({
 def _censor_lyrics_text(value):
     """Mask profanity, including common lyric spellings with substitute glyphs."""
     def censor_masked(match):
-        normalized = match.group().translate(_MASKED_LETTERS)
-        return "****" if profanity.censor(normalized) == "****" else match.group()
+        normalized = match.group().rstrip("'’").translate(_MASKED_LETTERS)
+        if profanity.censor(normalized) == "****":
+            return "****"
+        # The library recognizes some asterisks, but not several missing
+        # letters in one word (for example m*th*rf**ker).
+        if "*" in normalized:
+            letters = normalized.lower()
+            fixed = sum(character != "*" for character in letters)
+            if fixed >= 4 and fixed * 2 >= len(letters):
+                for word in _MASKED_CENSOR_WORDS.get(len(letters), ()):
+                    if all(a == "*" or a == b for a, b in zip(letters, word)):
+                        return "****"
+        return match.group()
 
-    return profanity.censor(_MASKED_WORD.sub(censor_masked, value))
+    value = _MASKED_WORD.sub(censor_masked, value)
+    value = _TRAILING_APOSTROPHE_WORD.sub(censor_masked, value)
+    return profanity.censor(value)
 
 try:
     from rich.cells import cell_len, set_cell_size
