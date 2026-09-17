@@ -73,8 +73,12 @@ use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
-visible. Lyrics are censored with better-profanity, including disguised words
-such as `s*x`, `s✱x`, and `s*xy`; "hell" stays visible.
+visible. When a section credits singers by name, each name gets a distinct
+color. Genius italic markup is used to color different singers' lines; in a
+two-singer section without an italicized name credit, italic lines are assigned
+to the second listed singer. Lyrics are censored with better-profanity,
+including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
+stay visible.
 Drag the sidebar's left edge to resize it. Playlist and lyrics widths are saved
 in `.mp3cache.json` and restored the next time you open the player. Resizing
 lyrics leaves the playlist width alone.

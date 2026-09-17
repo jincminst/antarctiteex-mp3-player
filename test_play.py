@@ -1198,6 +1198,55 @@ class PureHelperTests(unittest.TestCase):
 
 
 class LyricsTests(unittest.TestCase):
+    def test_genius_italics_color_singers_from_section_credits(self):
+        parser = play._GeniusLyricsParser()
+        parser.feed(
+            '<div data-lyrics-container="true">'
+            '[Verse 1: Mira Vale &amp; Rowan Frost]<br>'
+            'First line<br><span style="font-style: italic"><span>Second line</span></span><br>'
+            'First again<br>'
+            '<i>Emphasis</i> in a normal line<br>'
+            '[Chorus: Rowan Frost]<br>Solo line'
+            '</div>'
+        )
+        marked = play.Player._clean_lyrics_text(parser.marked_text())
+        lyrics, italics = play._extract_lyric_italics(marked)
+        self.assertEqual(parser.text().count("\ue000"), 0)
+        self.assertIn("[Verse 1: Mira Vale & Rowan Frost]", lyrics)
+        rendered = play._render_singer_lyrics(lyrics, italics)
+
+        def color_at(fragment):
+            position = rendered.plain.index(fragment)
+            colors = [span.style for span in rendered.spans
+                      if span.start <= position < span.end]
+            return colors[-1] if colors else None
+
+        self.assertEqual(color_at("Mira Vale"), color_at("First line"))
+        self.assertEqual(color_at("Rowan Frost"), color_at("Second line"))
+        self.assertNotEqual(color_at("Mira Vale"), color_at("Rowan Frost"))
+        self.assertEqual(color_at("First again"), color_at("Mira Vale"))
+        self.assertEqual(color_at("Solo line"), color_at("Rowan Frost"))
+
+    def test_italicized_credit_overrides_duet_order(self):
+        parser = play._GeniusLyricsParser()
+        parser.feed(
+            '<div data-lyrics-container="true">'
+            '[Verse: <em>Alex River</em> &amp; Casey Lane]'
+            '<br><em>Alex line</em><br>Casey line'
+            '</div>'
+        )
+        lyrics, italics = play._extract_lyric_italics(
+            play.Player._clean_lyrics_text(parser.marked_text())
+        )
+        rendered = play._render_singer_lyrics(lyrics, italics)
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+        self.assertEqual(color("Alex River"), color("Alex line"))
+        self.assertEqual(color("Casey Lane"), color("Casey line"))
+        self.assertNotEqual(color("Alex River"), color("Casey Lane"))
+
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)
         player._lyrics_request_id = 1
@@ -1209,13 +1258,30 @@ class LyricsTests(unittest.TestCase):
 
         player._finish_lyrics_request(
             1, "Example", {"text": "[Verse 1]\nHell is a place. Damn, that's shit.",
-                           "source": "Genius"}
+                           "source": "Genius", "italics": [[], [[0, 16]]]}
         )
 
         self.assertEqual(
             player.lyrics_text, "[Verse 1]\nHell is a place. ****, that's ****."
         )
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
+        self.assertEqual(player.lyrics_italics, [[], [[0, 16]]])
+        self.assertEqual(player.meta["Example"]["lyrics_cache"]["italics"], player.lyrics_italics)
+
+    def test_censoring_keeps_a_whole_italic_line_marked(self):
+        player = play.Player.__new__(play.Player)
+        player._lyrics_request_id = 1
+        player.lyrics_song = "Example"
+        player._lyrics_loading = True
+        player._lyrics_memory_cache = {}
+        player.meta = {}
+        player._wake_ui = lambda: None
+        player._finish_lyrics_request(
+            1, "Example", {"text": "[Verse: Mira Vale & Rowan Frost]\nsex",
+                           "source": "Genius", "italics": [[], [[0, 3]]]}
+        )
+        self.assertEqual(player.lyrics_text.splitlines()[-1], "****")
+        self.assertEqual(player.lyrics_italics[-1], [[0, 4]])
 
     def test_lyrics_filter_censors_disguised_words_without_changing_safe_text(self):
         self.assertEqual(
@@ -1439,7 +1505,7 @@ class LyricsTests(unittest.TestCase):
             "url": "https://genius.com/Olivia-rodrigo-vampire-lyrics",
             "primary_artist": {"name": "Olivia Rodrigo"},
         }}]}}
-        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        page = '<div data-lyrics-container="true">[Verse 1]<br><i>Words</i></div>'
         with (
             mock.patch.dict(play.os.environ, {"GENIUS_ACCESS_TOKEN": "secret"}),
             mock.patch.object(player, "_fetch_json", return_value=search) as fetch,
@@ -1452,6 +1518,7 @@ class LyricsTests(unittest.TestCase):
         self.assertTrue(fetch.call_args.args[0].startswith(play.GENIUS_OFFICIAL_SEARCH_URL))
         self.assertEqual(fetch.call_args.args[1], {"Authorization": "Bearer secret"})
         self.assertEqual(result["text"], "[Verse 1]\nWords")
+        self.assertEqual(result["italics"], [[], [[0, 5]]])
 
     def test_filename_metadata_prefers_artist_tag_then_dash_format(self):
         self.assertEqual(

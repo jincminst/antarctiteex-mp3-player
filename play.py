@@ -170,7 +170,10 @@ LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
-LYRICS_CACHE_VERSION = 3
+LYRICS_CACHE_VERSION = 4
+_ITALIC_START = "\ue000"
+_ITALIC_END = "\ue001"
+_SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
 APPLE_RADIO_STATIONS = (
     {
         "name": "Apple Music 1",
@@ -197,6 +200,20 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
         super().__init__(convert_charrefs=True)
         self.depth = 0
         self.lines = []
+        self.italic_depth = 0
+        self.span_depth = 0
+        self.italic_span_depths = []
+
+    def _enter_italic(self):
+        if not self.italic_depth:
+            self.lines.append(_ITALIC_START)
+        self.italic_depth += 1
+
+    def _leave_italic(self):
+        if self.italic_depth:
+            self.italic_depth -= 1
+            if not self.italic_depth:
+                self.lines.append(_ITALIC_END)
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
@@ -211,19 +228,140 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
             self.depth += 1
         elif tag == "br":
             self.lines.append("\n")
+        elif tag in {"i", "em"}:
+            self._enter_italic()
+        elif tag == "span":
+            self.span_depth += 1
+            if re.search(r"font-style\s*:\s*italic\b", attributes.get("style", ""), re.I):
+                self.italic_span_depths.append(self.span_depth)
+                self._enter_italic()
 
     def handle_endtag(self, tag):
         if self.depth and tag == "div":
             self.depth -= 1
             if not self.depth:
+                if self.italic_depth:
+                    self.lines.append(_ITALIC_END)
+                    self.italic_depth = 0
+                self.span_depth = 0
+                self.italic_span_depths.clear()
                 self.lines.append("\n")
+        elif self.depth and tag in {"i", "em"} and self.italic_depth:
+            self._leave_italic()
+        elif self.depth and tag == "span":
+            if self.italic_span_depths and self.italic_span_depths[-1] == self.span_depth:
+                self.italic_span_depths.pop()
+                self._leave_italic()
+            self.span_depth = max(0, self.span_depth - 1)
 
     def handle_data(self, data):
         if self.depth:
             self.lines.append(data)
 
     def text(self):
+        return self.marked_text().replace(_ITALIC_START, "").replace(_ITALIC_END, "")
+
+    def marked_text(self):
         return "".join(self.lines)
+
+
+def _extract_lyric_italics(marked_text):
+    """Return plain lyrics and per-line character ranges that Genius italicized."""
+    plain_lines = []
+    spans = []
+    italic = False
+    for marked_line in marked_text.split("\n"):
+        plain = []
+        line_spans = []
+        start = 0 if italic else None
+        for character in marked_line:
+            if character == _ITALIC_START:
+                if not italic:
+                    start = len(plain)
+                italic = True
+            elif character == _ITALIC_END:
+                if italic and start is not None and len(plain) > start:
+                    line_spans.append([start, len(plain)])
+                italic = False
+                start = None
+            else:
+                plain.append(character)
+        if italic and start is not None and len(plain) > start:
+            line_spans.append([start, len(plain)])
+        plain_lines.append("".join(plain))
+        spans.append(line_spans)
+    return "\n".join(plain_lines), spans
+
+
+def _render_singer_lyrics(lyrics, italics):
+    """Color credited singers and lines, using Genius' italic singer cue."""
+    rendered = Text(lyrics)
+    lines = lyrics.split("\n")
+    heading = re.compile(
+        r"^\[(?:verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|intro|"
+        r"outro|refrain|hook|break|interlude)[^:\]]*:\s*([^\]]+)\]$", re.I
+    )
+    singers = {}
+    active = []
+    italic_singer = None
+    duet_has_italics = False
+    offset = 0
+    for index, line in enumerate(lines):
+        line_spans = italics[index] if index < len(italics) else []
+        match = heading.match(line)
+        if match:
+            active = [
+                name.strip() for name in re.split(r"\s*(?:,|&|\band\b|/|\+)\s*", match.group(1), flags=re.I)
+                if name.strip()
+            ]
+            active = active[:6]
+            italic_singer = None
+            duet_has_italics = False
+            for following in range(index + 1, len(lines)):
+                if lines[following].startswith("[") and lines[following].endswith("]"):
+                    break
+                following_spans = italics[following] if following < len(italics) else []
+                if any(
+                    start <= 0 and end >= len(lines[following].rstrip())
+                    for start, end in following_spans
+                ) and lines[following].strip():
+                    duet_has_italics = True
+                    break
+            cursor = match.start(1)
+            for name in active:
+                start = line.find(name, cursor)
+                if start < 0:
+                    continue
+                end = start + len(name)
+                key = name.casefold()
+                color = singers.setdefault(key, _SINGER_COLORS[len(singers) % len(_SINGER_COLORS)])
+                rendered.stylize(color, offset + start, offset + end)
+                if any(start < span_end and end > span_start for span_start, span_end in line_spans):
+                    italic_singer = key
+                cursor = end
+            if len(active) == 2 and italic_singer is None:
+                # The markup does not identify a singer when neither credit
+                # is italicized; use the second credit as a consistent cue.
+                italic_singer = active[-1].casefold()
+        elif line.startswith("[") and line.endswith("]"):
+            active = []
+            italic_singer = None
+            duet_has_italics = False
+        elif line and active:
+            if len(active) == 1:
+                singer = active[0].casefold()
+            elif len(active) == 2 and duet_has_italics and italic_singer and any(
+                start <= 0 and end >= len(line.rstrip()) for start, end in line_spans
+            ):
+                singer = italic_singer
+            elif len(active) == 2 and duet_has_italics and italic_singer:
+                singer = next((name.casefold() for name in active if name.casefold() != italic_singer), None)
+            else:
+                singer = None
+            if singer in singers:
+                rendered.stylize(singers[singer], offset, offset + len(line))
+        offset += len(line) + 1
+    return rendered
 
 
 class Player:
@@ -413,6 +551,7 @@ class Player:
         self.lyrics_song = ""
         self.lyrics_status = ""
         self.lyrics_text = ""
+        self.lyrics_italics = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
         self._lyrics_loading = False
@@ -2127,9 +2266,11 @@ class Player:
                 parser.feed(self._fetch_text(page_url))
             except Exception:
                 continue
-            lyrics = self._clean_lyrics_text(parser.text())
+            marked = self._clean_lyrics_text(parser.marked_text())
+            lyrics, italics = _extract_lyric_italics(marked)
             if lyrics:
-                return {"text": lyrics, "source": "Genius", "url": page_url}
+                return {"text": lyrics, "italics": italics,
+                        "source": "Genius", "url": page_url}
         return None
 
     def _fetch_preferred_lyrics(self, metadata):
@@ -2278,6 +2419,7 @@ class Player:
             self.lyrics_song = ""
             self.lyrics_status = ""
             self.lyrics_text = ""
+            self.lyrics_italics = []
             self.lyrics_source = ""
             self.lyrics_source_url = ""
             self._lyrics_loading = False
@@ -2289,6 +2431,7 @@ class Player:
         self.lyrics_song = name
         self.lyrics_status = "Finding lyrics…"
         self.lyrics_text = ""
+        self.lyrics_italics = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
         self._lyrics_loading = True
@@ -2325,16 +2468,32 @@ class Player:
             return
         self._lyrics_loading = False
         if result and result.get("text"):
+            clean_text = self._clean_lyrics_text(result.get("text"))
+            censored_text = _censor_lyrics_text(clean_text)
+            italics = result.get("italics") or []
+            original_lines = clean_text.split("\n")
+            censored_lines = censored_text.split("\n")
+            # Censoring may change a line's length. Keep fully italicized
+            # lines fully marked so their singer color survives masking.
+            if len(original_lines) == len(censored_lines):
+                italics = [
+                    [[0, len(censored_lines[index])]
+                     if start == 0 and end >= len(original_lines[index])
+                     else [start, end]
+                     for start, end in line_spans]
+                    for index, line_spans in enumerate(italics)
+                    if index < len(original_lines)
+                ]
             result = {
-                "text": _censor_lyrics_text(
-                    self._clean_lyrics_text(result.get("text"))
-                ),
+                "text": censored_text,
                 "source": str(result.get("source") or "Lyrics"),
                 "url": str(result.get("url") or ""),
+                "italics": italics,
                 "cache_version": LYRICS_CACHE_VERSION,
             }
             self._lyrics_memory_cache[name] = result
             self.lyrics_text = result["text"]
+            self.lyrics_italics = result["italics"]
             self.lyrics_source = result["source"]
             self.lyrics_source_url = result["url"]
             self.lyrics_status = ""
@@ -3288,6 +3447,7 @@ class Player:
                 self.lyrics_song = ""
                 self.lyrics_status = ""
                 self.lyrics_text = ""
+                self.lyrics_italics = []
                 self.lyrics_source = ""
                 self.lyrics_source_url = ""
                 self._lyrics_loading = False
@@ -9539,7 +9699,12 @@ if TEXTUAL_AVAILABLE:
                 p.lyrics_text or p.lyrics_status
                 or ("Finding lyrics…" if name else "Play a local MP3 to see lyrics.")
             )
-            self.query_one("#lyrics-content", Static).update(Text(content))
+            formatted = (
+                _render_singer_lyrics(content, p.lyrics_italics)
+                if p.lyrics_text
+                else Text(content)
+            )
+            self.query_one("#lyrics-content", Static).update(formatted)
             if token and p.lyrics_text and token != self._lyrics_scrolled_token:
                 self._lyrics_scrolled_token = token
                 reset_scroll = True
