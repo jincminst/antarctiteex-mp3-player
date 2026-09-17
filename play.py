@@ -8986,7 +8986,7 @@ if TEXTUAL_AVAILABLE:
         #lyrics-track { height: auto; max-height: 4; padding: 1 1 0 1; text-style: bold; }
         #lyrics-source { height: 2; padding: 0 1; color: #777777; }
         #lyrics-scroll { height: 1fr; padding: 0 1 1 1; scrollbar-size: 1 1; }
-        #lyrics-content { width: 100%; height: auto; }
+        #lyrics-content { width: 100%; height: auto; padding-right: 1; }
         #workspace.youtube #playlists { display: none; }
         #workspace.youtube #playlist-resizer { display: none; }
         #workspace.youtube #library { border-left: solid #777777; }
