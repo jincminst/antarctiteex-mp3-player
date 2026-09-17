@@ -1922,6 +1922,49 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.pause()
                         request.assert_called_once_with("[OR] vampire")
 
+    async def test_new_song_lyrics_start_at_top_without_interrupting_manual_scroll(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "First.mp3").touch()
+            Path(folder, "Second.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    player = app.player
+                    long_lyrics = "\n".join(f"Lyric line {i}" for i in range(80))
+
+                    def request_lyrics(name):
+                        player.lyrics_text = long_lyrics if name == "First" else ""
+                        player.lyrics_status = "Finding lyrics…" if name == "Second" else ""
+
+                    player.current = "First"
+                    player._playback_id += 1
+                    with mock.patch.object(player, "request_lyrics", side_effect=request_lyrics):
+                        await pilot.click("#lyrics-tab")
+                        await pilot.pause()
+                        scroll = app.query_one("#lyrics-scroll")
+                        scroll.scroll_to(y=1000, animate=False, force=True)
+                        await pilot.pause()
+                        self.assertGreater(scroll.scroll_y, 0)
+
+                        player.current = "Second"
+                        player._playback_id += 1
+                        app.refresh_ui()
+                        await pilot.pause()
+                        self.assertEqual(scroll.scroll_y, 0)
+
+                        player.lyrics_text = long_lyrics
+                        player.lyrics_status = ""
+                        app.refresh_ui()
+                        await pilot.pause()
+                        self.assertEqual(scroll.scroll_y, 0)
+
+                        scroll.scroll_to(y=1000, animate=False, force=True)
+                        await pilot.pause()
+                        self.assertGreater(scroll.scroll_y, 0)
+                        app.refresh_ui()
+                        await pilot.pause()
+                        self.assertGreater(scroll.scroll_y, 0)
+
     async def test_sidebar_widths_reload_from_library_cache(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(play.Player, "start_background_services"):

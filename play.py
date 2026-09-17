@@ -9057,6 +9057,7 @@ if TEXTUAL_AVAILABLE:
             self._drag_badge_width = 8
             self._lyrics_token = None
             self._lyrics_requested_token = None
+            self._lyrics_scrolled_token = None
             self._lyrics_enabled = False
             self._lyrics_width = None
             self._playlist_width = None
@@ -9481,8 +9482,10 @@ if TEXTUAL_AVAILABLE:
                 self.call_after_refresh(self._clamp_lyrics_sidebar_width)
             if not visible:
                 return
+            reset_scroll = token != self._lyrics_requested_token or visibility_changed
             if token != self._lyrics_requested_token:
                 self._lyrics_requested_token = token
+                self._lyrics_scrolled_token = None
                 p.request_lyrics(name)
             self.query_one("#lyrics-track", Static).update(Text(name or "No local song playing"))
             source = Text()
@@ -9501,6 +9504,15 @@ if TEXTUAL_AVAILABLE:
                 or ("Finding lyrics…" if name else "Play a local MP3 to see lyrics.")
             )
             self.query_one("#lyrics-content", Static).update(Text(content))
+            if token and p.lyrics_text and token != self._lyrics_scrolled_token:
+                self._lyrics_scrolled_token = token
+                reset_scroll = True
+            if reset_scroll:
+                self.call_after_refresh(
+                    lambda: self.query_one("#lyrics-scroll", VerticalScroll).scroll_to(
+                        y=0, animate=False, force=True
+                    )
+                )
 
         def toggle_lyrics_panel(self):
             self._lyrics_enabled = not self._lyrics_enabled
