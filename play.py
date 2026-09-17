@@ -1801,18 +1801,24 @@ class Player:
 
     @classmethod
     def _artist_tag_query_variants(cls, tag):
-        """Search numeric aliases as both digits and number-word initials."""
+        """Try digits, their English words, and the resulting initials."""
         tag = str(tag or "").strip()
         variants = [tag] if tag else []
-        expanded = re.sub(
+        spelled = re.sub(
             r"\d{1,2}",
-            lambda match: "".join(
-                word[0] for word in cls._artist_number_words(int(match.group()))
-            ).upper(),
+            lambda match: " " + " ".join(
+                cls._artist_number_words(int(match.group()))
+            ) + " ",
             tag,
         )
-        if expanded and expanded.casefold() != tag.casefold():
-            variants.append(expanded)
+        spelled = " ".join(spelled.split())
+        if spelled and spelled.casefold() != tag.casefold():
+            variants.append(spelled)
+            initials = "".join(
+                word[0] for word in spelled.split()
+            ).upper()
+            if initials.casefold() != tag.casefold():
+                variants.append(initials)
         return variants
 
     @staticmethod

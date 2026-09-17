@@ -1268,7 +1268,14 @@ class LyricsTests(unittest.TestCase):
         self.assertFalse(matches("Twenty One Savage", "21P"))
         self.assertFalse(matches("Two One Pilots", "21P"))
         self.assertFalse(matches("Wrong Artist", "OR"))
-        self.assertEqual(play.Player._artist_tag_query_variants("21P"), ["21P", "TOP"])
+        self.assertEqual(
+            play.Player._artist_tag_query_variants("21P"),
+            ["21P", "twenty one P", "TOP"],
+        )
+        self.assertEqual(
+            play.Player._artist_tag_query_variants("7R"),
+            ["7R", "seven R", "SR"],
+        )
 
     def test_genius_tries_number_word_initials_and_rejects_wrong_artist(self):
         player = play.Player.__new__(play.Player)
@@ -1289,9 +1296,30 @@ class LyricsTests(unittest.TestCase):
                 "artist": "21P", "artist_tag": "21P", "title": "Stressed Out",
             })
         self.assertEqual([call.args[0] for call in search.call_args_list],
-                         ["Stressed Out 21P", "Stressed Out TOP"])
+                         ["Stressed Out 21P", "Stressed Out twenty one P"])
         fetch_page.assert_called_once_with("https://genius.com/right")
         self.assertEqual(result["text"], "[Verse 1]\nRight")
+
+    def test_genius_tries_initials_after_spelled_number_query(self):
+        player = play.Player.__new__(play.Player)
+        empty = {"response": {"hits": []}}
+        right = {"response": {"hits": [{"result": {
+            "title": "Stressed Out", "url": "https://genius.com/right",
+            "primary_artist": {"name": "Twenty One Pilots"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Right</div>'
+        with (
+            mock.patch.object(player, "_search_genius", side_effect=[empty, empty, right]) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "21P", "artist_tag": "21P", "title": "Stressed Out",
+            })
+        self.assertEqual(
+            [call.args[0] for call in search.call_args_list],
+            ["Stressed Out 21P", "Stressed Out twenty one P", "Stressed Out TOP"],
+        )
+        self.assertEqual(result["url"], "https://genius.com/right")
 
     def test_genius_rejects_playlist_hint_with_mismatched_initials(self):
         player = play.Player.__new__(play.Player)

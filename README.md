@@ -118,7 +118,8 @@ does not rename files or affect automatic playlist matching.
 For lyrics, the bracketed tag is checked against the artist's initials before
 online results are used. Numbers can stand for their spelled-out words: `[21P]`
 matches Twenty One Pilots (`TOP`). Naming a tagged playlist after the artist
-can also help the search find the right song.
+can also help the search find the right song. The lyrics search tries the
+number as English words too, so `[21P]` also searches with `twenty one P`.
 
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.
