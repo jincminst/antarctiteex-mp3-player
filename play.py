@@ -294,73 +294,105 @@ def _extract_lyric_italics(marked_text):
 
 
 def _render_singer_lyrics(lyrics, italics):
-    """Color credited singers and lines, using Genius' italic singer cue."""
+    """Leave the lead unstyled and color additional credited singers."""
     rendered = Text(lyrics)
     lines = lyrics.split("\n")
     heading = re.compile(
         r"^\[(?:verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|intro|"
         r"outro|refrain|hook|break|interlude)[^:\]]*:\s*([^\]]+)\]$", re.I
     )
-    singers = {}
-    active = []
-    italic_singer = None
-    duet_has_italics = False
-    offset = 0
+    sections = []
+    first_seen = {}
+    solo_lines = {}
+    credited_lines = {}
+
+    # Count solo lines first: a name merely appearing in several duet credits
+    # should not outweigh the singer who carries the song's solo sections.
     for index, line in enumerate(lines):
-        line_spans = italics[index] if index < len(italics) else []
         match = heading.match(line)
-        if match:
-            active = [
-                name.strip() for name in re.split(r"\s*(?:,|&|\band\b|/|\+)\s*", match.group(1), flags=re.I)
-                if name.strip()
-            ]
-            active = active[:6]
-            italic_singer = None
-            duet_has_italics = False
-            for following in range(index + 1, len(lines)):
-                if lines[following].startswith("[") and lines[following].endswith("]"):
-                    break
-                following_spans = italics[following] if following < len(italics) else []
-                if any(
-                    start <= 0 and end >= len(lines[following].rstrip())
-                    for start, end in following_spans
-                ) and lines[following].strip():
-                    duet_has_italics = True
-                    break
-            cursor = match.start(1)
-            for name in active:
-                start = line.find(name, cursor)
-                if start < 0:
-                    continue
-                end = start + len(name)
-                key = name.casefold()
-                color = singers.setdefault(key, _SINGER_COLORS[len(singers) % len(_SINGER_COLORS)])
-                rendered.stylize(color, offset + start, offset + end)
-                if any(start < span_end and end > span_start for span_start, span_end in line_spans):
-                    italic_singer = key
-                cursor = end
-            if len(active) == 2 and italic_singer is None:
-                # The markup does not identify a singer when neither credit
-                # is italicized; use the second credit as a consistent cue.
-                italic_singer = active[-1].casefold()
-        elif line.startswith("[") and line.endswith("]"):
-            active = []
-            italic_singer = None
-            duet_has_italics = False
-        elif line and active:
-            if len(active) == 1:
-                singer = active[0].casefold()
-            elif len(active) == 2 and duet_has_italics and italic_singer and any(
-                start <= 0 and end >= len(line.rstrip()) for start, end in line_spans
+        if not match:
+            continue
+        names = [
+            name.strip() for name in re.split(
+                r"\s*(?:,|&|\band\b|/|\+)\s*", match.group(1), flags=re.I
+            ) if name.strip()
+        ][:6]
+        if not names:
+            continue
+        end = index + 1
+        while end < len(lines) and not (lines[end].startswith("[") and lines[end].endswith("]")):
+            end += 1
+        count = sum(bool(body.strip()) for body in lines[index + 1:end])
+        sections.append((index, end, match.start(1), names))
+        for name in names:
+            key = name.casefold()
+            first_seen.setdefault(key, len(first_seen))
+            credited_lines[key] = credited_lines.get(key, 0) + count
+            if len(names) == 1:
+                solo_lines[key] = solo_lines.get(key, 0) + count
+
+    if not first_seen:
+        return rendered
+    lead = max(first_seen, key=lambda key: (
+        solo_lines.get(key, 0), credited_lines.get(key, 0), -first_seen[key]
+    ))
+    colors = {
+        key: _SINGER_COLORS[index % len(_SINGER_COLORS)]
+        for index, key in enumerate(key for key in first_seen if key != lead)
+    }
+    offsets = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line) + 1
+
+    for index, end, name_start, names in sections:
+        header_spans = italics[index] if index < len(italics) else []
+        italic_singer = None
+        cursor = name_start
+        for name in names:
+            start = lines[index].find(name, cursor)
+            if start < 0:
+                continue
+            finish = start + len(name)
+            key = name.casefold()
+            if key in colors:
+                rendered.stylize(colors[key], offsets[index] + start, offsets[index] + finish)
+            if any(start < span_end and finish > span_start
+                   for span_start, span_end in header_spans):
+                italic_singer = key
+            cursor = finish
+
+        if len(names) == 2 and italic_singer is None:
+            italic_singer = names[-1].casefold()
+        full_italic = set()
+        for line_index in range(index + 1, end):
+            spans = italics[line_index] if line_index < len(italics) else []
+            if lines[line_index].strip() and any(
+                start == 0 and finish >= len(lines[line_index].rstrip())
+                for start, finish in spans
             ):
-                singer = italic_singer
-            elif len(active) == 2 and duet_has_italics and italic_singer:
-                singer = next((name.casefold() for name in active if name.casefold() != italic_singer), None)
+                full_italic.add(line_index)
+
+        for line_index in range(index + 1, end):
+            line = lines[line_index]
+            if not line.strip():
+                continue
+            if len(names) == 1:
+                singer = names[0].casefold()
+            elif len(names) == 2 and full_italic:
+                singer = (italic_singer if line_index in full_italic else
+                          next((name.casefold() for name in names
+                                if name.casefold() != italic_singer), None))
+            elif len(names) == 2:
+                # Without per-line cues, the whole duet marks the additional
+                # singer's presence rather than guessing who sang each line.
+                singer = next((name.casefold() for name in names
+                               if name.casefold() != lead), None)
             else:
                 singer = None
-            if singer in singers:
-                rendered.stylize(singers[singer], offset, offset + len(line))
-        offset += len(line) + 1
+            if singer in colors:
+                rendered.stylize(colors[singer], offsets[line_index], offsets[line_index] + len(line))
     return rendered
 
 

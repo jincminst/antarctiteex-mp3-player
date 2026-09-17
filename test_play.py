@@ -1247,6 +1247,43 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(color("Casey Lane"), color("Casey line"))
         self.assertNotEqual(color("Alex River"), color("Casey Lane"))
 
+    def test_lead_stays_plain_and_unmarked_bridge_shows_added_singer(self):
+        lyrics = (
+            "[Verse 1: Casey Lane]\nMain verse one\nMain verse two\n"
+            "[Bridge: Casey Lane & Mira Vale]\nTogether here\nTogether again\n"
+            "[Chorus: Casey Lane]\nMain chorus"
+        )
+        rendered = play._render_singer_lyrics(lyrics, [])
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color("Casey Lane"))
+        self.assertIsNone(color("Main verse one"))
+        self.assertIsNone(color("Main chorus"))
+        self.assertIsNotNone(color("Mira Vale"))
+        self.assertEqual(color("Mira Vale"), color("Together here"))
+        self.assertEqual(color("Mira Vale"), color("Together again"))
+
+    def test_italic_duet_only_colors_the_added_singer(self):
+        lyrics = (
+            "[Verse: Casey Lane]\nLead line one\nLead line two\n"
+            "[Bridge: Casey Lane & Mira Vale]\nLead bridge line\nGuest bridge line"
+        )
+        italics = [[], [], [], [], [], [[0, 17]]]
+        rendered = play._render_singer_lyrics(lyrics, italics)
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color("Lead bridge line"))
+        self.assertIsNotNone(color("Guest bridge line"))
+        self.assertEqual(color("Mira Vale"), color("Guest bridge line"))
+
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)
         player._lyrics_request_id = 1

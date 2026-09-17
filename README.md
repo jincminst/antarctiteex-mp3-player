@@ -73,10 +73,13 @@ use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
-visible. When a section credits singers by name, each name gets a distinct
-color. Genius italic markup is used to color different singers' lines; in a
-two-singer section without an italicized name credit, italic lines are assigned
-to the second listed singer. Lyrics are censored with better-profanity,
+visible. The singer with the most solo lines keeps the normal text color;
+other credited singers and their lines get distinct colors. Genius italic
+markup separates singers' lines in a duet. If a two-singer section has no
+italic lines, the whole section uses the added singer's color so the duet is
+still visible. When neither name is italicized in the section heading,
+italic lines are assigned to the second listed singer. Lyrics are censored
+with better-profanity,
 including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
 stay visible.
 Drag the sidebar's left edge to resize it. Playlist and lyrics widths are saved
