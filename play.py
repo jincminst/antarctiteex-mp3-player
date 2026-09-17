@@ -151,7 +151,7 @@ LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
-LYRICS_CACHE_VERSION = 2
+LYRICS_CACHE_VERSION = 3
 APPLE_RADIO_STATIONS = (
     {
         "name": "Apple Music 1",
@@ -1696,7 +1696,8 @@ class Player:
             artist, _title = self._lyrics_metadata_from_filename(name)
             metadata = self._read_audio_lyrics_metadata(name)
             embedded_artist = str(metadata.get("artist") or "").strip()
-            if embedded_artist and embedded_artist.casefold() != artist.casefold():
+            if (embedded_artist and embedded_artist.casefold() != artist.casefold()
+                    and self._artist_matches_tag(embedded_artist, tag)):
                 embedded_artists.add(embedded_artist)
         if len(embedded_artists) == 1:
             artist = embedded_artists.pop()
@@ -1735,21 +1736,84 @@ class Player:
         return ""
 
     @staticmethod
-    def _artist_matches_tag(artist, tag):
-        """Return whether an artist name matches a bracketed artist tag."""
-        def normalized(value):
-            value = unicodedata.normalize("NFKD", str(value or ""))
-            return re.sub(r"[^a-z0-9]", "", value.casefold())
+    def _artist_number_words(number):
+        """Spell a number in an artist name so 21P and TOP can agree."""
+        ones = (
+            "zero", "one", "two", "three", "four", "five", "six",
+            "seven", "eight", "nine", "ten", "eleven", "twelve",
+            "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+            "eighteen", "nineteen",
+        )
+        tens = (
+            "", "", "twenty", "thirty", "forty", "fifty", "sixty",
+            "seventy", "eighty", "ninety",
+        )
+        if number < 0 or number > 99:
+            return ()
+        if number < 20:
+            return (ones[number],)
+        return (tens[number // 10],) + ((ones[number % 10],) if number % 10 else ())
 
+    @classmethod
+    def _artist_matches_tag(cls, artist, tag):
+        """Match an artist's initials, treating 21 and twenty one alike."""
+        normalized = lambda value: re.sub(
+            r"[^a-z0-9]", "", unicodedata.normalize("NFKD", str(value or "")).casefold()
+        )
         wanted = normalized(tag)
         if not wanted:
             return False
         words = re.findall(
-            r"[A-Za-z0-9]+",
-            unicodedata.normalize("NFKD", str(artist or "")),
+            r"[a-z0-9]+", unicodedata.normalize("NFKD", str(artist or "")).casefold()
         )
-        initials = "".join(word[0] for word in words if word)
-        return wanted in {normalized(artist), normalized(initials)}
+        if wanted == normalized(artist):
+            return True
+        expanded = []
+        for word in words:
+            expanded.extend(cls._artist_number_words(int(word)) if word.isdigit()
+                            and len(word) <= 2 else (word,))
+        if wanted == "".join(word[0] for word in expanded):
+            return True
+        number_phrases = {
+            cls._artist_number_words(number): str(number)
+            for number in range(100)
+        }
+        contracted = []
+        index = 0
+        while index < len(expanded):
+            pair = tuple(expanded[index:index + 2])
+            single = (expanded[index],)
+            if pair in number_phrases:
+                contracted.append(number_phrases[pair])
+                index += 2
+            elif (single in number_phrases and index + 1 < len(expanded)
+                  and (expanded[index + 1],) in number_phrases):
+                contracted.append(expanded[index])
+                index += 1
+            elif single in number_phrases:
+                contracted.append(number_phrases[single])
+                index += 1
+            else:
+                contracted.append(expanded[index])
+                index += 1
+        return wanted == "".join(word[0] if not word.isdigit() else word
+                                 for word in contracted)
+
+    @classmethod
+    def _artist_tag_query_variants(cls, tag):
+        """Search numeric aliases as both digits and number-word initials."""
+        tag = str(tag or "").strip()
+        variants = [tag] if tag else []
+        expanded = re.sub(
+            r"\d{1,2}",
+            lambda match: "".join(
+                word[0] for word in cls._artist_number_words(int(match.group()))
+            ).upper(),
+            tag,
+        )
+        if expanded and expanded.casefold() != tag.casefold():
+            variants.append(expanded)
+        return variants
 
     @staticmethod
     def _normalized_lyrics_identity(value):
@@ -1978,7 +2042,8 @@ class Player:
             known_artist if known_artist.casefold() != tag.casefold()
             else artist_hint or known_artist
         )
-        for artist in (preferred_artist, known_artist, artist_hint, tag):
+        for artist in (preferred_artist, known_artist, artist_hint,
+                       *self._artist_tag_query_variants(tag)):
             if artist and self._normalized_lyrics_identity(artist) not in {
                 self._normalized_lyrics_identity(item) for item in query_artists
             }:
@@ -2012,6 +2077,8 @@ class Player:
                         == self._normalized_lyrics_identity(artist_hint)
                     )
                     artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
+                    if tag and not artist_tag_match:
+                        continue
                     if not page_url or not title_score or not (
                         artist_exact or artist_hint_match or artist_tag_match
                     ):
@@ -2092,18 +2159,30 @@ class Player:
                     last_error = exc
             except Exception as exc:
                 last_error = exc
+        artist_tag = str(
+            metadata.get("artist_tag") or self._artist_tag_from_filename(
+                metadata.get("library_name", "")
+            )
+        ).strip()
+
+        def artist_matches(item):
+            found_artist = str(item.get("artistName") or "").strip()
+            if artist_tag and not self._artist_matches_tag(found_artist, artist_tag):
+                return False
+            return bool(found_artist) and (
+                not artist or self._normalized_lyrics_identity(found_artist)
+                == self._normalized_lyrics_identity(artist)
+                or bool(artist_tag)
+            )
+
+        if result is not None and (
+            not isinstance(result, dict)
+            or not self._genius_title_score(result.get("trackName", ""), title)
+            or not artist_matches(result)
+        ):
+            result = None
         if result is None:
             results = []
-            artist_tag = metadata.get("artist_tag") or artist
-
-            def artist_matches(item):
-                found_artist = item.get("artistName", "")
-                return bool(artist) and (
-                    self._normalized_lyrics_identity(found_artist)
-                    == self._normalized_lyrics_identity(artist)
-                    or bool(artist_tag)
-                    and self._artist_matches_tag(found_artist, artist_tag)
-                )
 
             searches = [{"track_name": title}]
             if artist:
@@ -2121,7 +2200,7 @@ class Player:
                     continue
                 if isinstance(found, list) and found:
                     results.extend(item for item in found if isinstance(item, dict))
-                    if not artist or any(
+                    if any(
                         self._genius_title_score(item.get("trackName", ""), title)
                         and artist_matches(item)
                         for item in results
@@ -2139,21 +2218,8 @@ class Player:
             if not candidates:
                 return None
             matched_artist = [item for item in candidates if artist_matches(item)]
-            if artist and matched_artist:
+            if artist or artist_tag:
                 candidates = matched_artist
-            elif artist:
-                # Some user tags (for example 21P) are aliases rather than
-                # initials. A close duration can still disambiguate the song.
-                if duration_ms <= 0:
-                    return None
-                target_seconds = duration_ms / 1000
-                candidates = [
-                    item for item in candidates
-                    if abs(
-                        float(item.get("duration", -1000) or -1000)
-                        - target_seconds
-                    ) <= 5
-                ]
                 if not candidates:
                     return None
             if duration_ms > 0:

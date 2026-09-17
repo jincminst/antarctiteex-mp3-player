@@ -115,6 +115,11 @@ Playlist names do not display their assigned tags in the sidebar. The
 **Show Tags** control only changes how MP3 names appear in the song list; it
 does not rename files or affect automatic playlist matching.
 
+For lyrics, the bracketed tag is checked against the artist's initials before
+online results are used. Numbers can stand for their spelled-out words: `[21P]`
+matches Twenty One Pilots (`TOP`). Naming a tagged playlist after the artist
+can also help the search find the right song.
+
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.
 

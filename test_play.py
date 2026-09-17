@@ -1259,6 +1259,57 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(player._playlist_artist_for_tag("AG"), "")
         self.assertEqual(player._playlist_artist_for_tag("X"), "")
 
+    def test_numbered_artist_tags_match_both_digit_and_word_initials(self):
+        matches = play.Player._artist_matches_tag
+        self.assertTrue(matches("Twenty One Pilots", "21P"))
+        self.assertTrue(matches("Twenty-One Pilots", "TOP"))
+        self.assertTrue(matches("21 Pilots", "TOP"))
+        self.assertTrue(matches("One Direction", "1D"))
+        self.assertFalse(matches("Twenty One Savage", "21P"))
+        self.assertFalse(matches("Two One Pilots", "21P"))
+        self.assertFalse(matches("Wrong Artist", "OR"))
+        self.assertEqual(play.Player._artist_tag_query_variants("21P"), ["21P", "TOP"])
+
+    def test_genius_tries_number_word_initials_and_rejects_wrong_artist(self):
+        player = play.Player.__new__(play.Player)
+        wrong = {"response": {"hits": [{"result": {
+            "title": "Stressed Out", "url": "https://genius.com/wrong",
+            "primary_artist": {"name": "Twenty One Savage"},
+        }}]}}
+        right = {"response": {"hits": [{"result": {
+            "title": "Stressed Out", "url": "https://genius.com/right",
+            "primary_artist": {"name": "Twenty One Pilots"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Right</div>'
+        with (
+            mock.patch.object(player, "_search_genius", side_effect=[wrong, right]) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page) as fetch_page,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "21P", "artist_tag": "21P", "title": "Stressed Out",
+            })
+        self.assertEqual([call.args[0] for call in search.call_args_list],
+                         ["Stressed Out 21P", "Stressed Out TOP"])
+        fetch_page.assert_called_once_with("https://genius.com/right")
+        self.assertEqual(result["text"], "[Verse 1]\nRight")
+
+    def test_genius_rejects_playlist_hint_with_mismatched_initials(self):
+        player = play.Player.__new__(play.Player)
+        search = {"response": {"hits": [{"result": {
+            "title": "vampire", "url": "https://genius.com/wrong",
+            "primary_artist": {"name": "Wrong Artist"},
+        }}]}}
+        with (
+            mock.patch.object(player, "_search_genius", return_value=search),
+            mock.patch.object(player, "_fetch_text") as fetch_page,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "OR", "artist_tag": "OR",
+                "artist_hint": "Wrong Artist", "title": "vampire",
+            })
+        self.assertIsNone(result)
+        fetch_page.assert_not_called()
+
     def test_ag_freak_infers_artist_from_clearer_sibling_song(self):
         player = play.Player.__new__(play.Player)
         player.folder = "/unused"
@@ -1639,6 +1690,23 @@ class LyricsTests(unittest.TestCase):
 
         self.assertEqual(result["text"], "[Verse 1]\nCorrect")
         self.assertEqual(fetch.call_count, 3)
+
+    def test_lrclib_rejects_same_title_and_duration_from_wrong_artist(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "[21P] Stressed Out"
+        wrong = {
+            "trackName": "Stressed Out", "artistName": "Twenty One Savage",
+            "duration": 202, "plainLyrics": "Wrong",
+        }
+        with (
+            mock.patch.object(player, "_cached_duration_ms", return_value=202_000),
+            mock.patch.object(player, "_fetch_json", side_effect=[wrong, [wrong], [wrong]]),
+        ):
+            result = player._fetch_lrclib_lyrics({
+                "artist": "21P", "artist_tag": "21P",
+                "title": "Stressed Out", "album": "",
+            })
+        self.assertIsNone(result)
 
     def test_lrclib_retries_after_http_503_and_matches_censored_title(self):
         player = play.Player.__new__(play.Player)
