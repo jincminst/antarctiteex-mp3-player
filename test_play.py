@@ -1365,7 +1365,7 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(color("Casey Lane"), color("Casey line"))
         self.assertNotEqual(color("Alex River"), color("Casey Lane"))
 
-    def test_lead_stays_plain_and_unmarked_bridge_does_not_guess_lines(self):
+    def test_lead_stays_plain_and_unmarked_duet_colors_shared_lines(self):
         lyrics = (
             "[Verse 1: Casey Lane]\nMain verse one\nMain verse two\n"
             "[Bridge: Casey Lane & Mira Vale]\nTogether here\nTogether again\n"
@@ -1382,8 +1382,41 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color("Main verse one"))
         self.assertIsNone(color("Main chorus"))
         self.assertIsNotNone(color("Mira Vale"))
-        self.assertIsNone(color("Together here"))
-        self.assertIsNone(color("Together again"))
+        self.assertEqual(color("Together here"), color("Mira Vale"))
+        self.assertEqual(color("Together again"), color("Mira Vale"))
+
+    def test_unmarked_three_singer_section_uses_group_accent(self):
+        lyrics = (
+            "[Verse: Billie Eilish]\nLead solo\n"
+            "[Chorus: Khalid & Billie Eilish & Guest Singer]\nTogether now"
+        )
+        rendered = play._render_singer_lyrics(lyrics, [])
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color("Lead solo"))
+        self.assertIsNotNone(color("Together now"))
+        self.assertIsNotNone(color("Khalid"))
+        self.assertIsNotNone(color("Guest Singer"))
+
+    def test_credited_duet_does_not_color_unmarked_lead_lines_when_parts_marked(self):
+        lyrics = (
+            "[Verse: Billie Eilish]\nLead solo\n"
+            "[Chorus: Khalid & Billie Eilish]\nLead line\nKhalid line"
+        )
+        italics = [[], [], [], [], [[0, len("Khalid line")]]]
+        rendered = play._render_singer_lyrics(lyrics, italics)
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color("Lead line"))
+        self.assertEqual(color("Khalid"), color("Khalid line"))
 
     def test_italic_duet_only_colors_the_added_singer(self):
         lyrics = (

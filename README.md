@@ -133,6 +133,9 @@ number as English words too, so `[21P]` also searches with `twenty one P`.
 Joined artist names work too: `[1R] Counting Stars` matches OneRepublic.
 If searches using the tag miss, the player also searches by song title and
 accepts lyrics only when the result's artist matches the tag.
+In Genius lyrics, a section crediting multiple singers colors shared lines
+when no individual vocal parts are marked. When parts are marked, only the
+guest singer's part is colored; the lead singer stays in the normal text color.
 
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.

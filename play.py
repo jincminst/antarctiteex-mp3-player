@@ -177,6 +177,7 @@ LYRICS_CACHE_VERSION = 4
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
 _SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
+_SHARED_SINGER_COLOR = "#c6a4ff"
 
 
 class _AudioObjectPropertyAddress(ctypes.Structure):
@@ -401,6 +402,10 @@ def _render_singer_lyrics(lyrics, italics):
 
     for index, end, name_start, names in sections:
         header_spans = italics[index] if index < len(italics) else []
+        has_marked_parts = any(
+            line_index < len(italics) and italics[line_index]
+            for line_index in range(index + 1, end)
+        )
         italic_singer = None
         cursor = name_start
         for name in names:
@@ -421,6 +426,10 @@ def _render_singer_lyrics(lyrics, italics):
                 (name.casefold() for name in names if name.casefold() != lead),
                 names[-1].casefold(),
             )
+        guests = [name.casefold() for name in names
+                  if name.casefold() in colors]
+        shared_accent = (colors[guests[0]] if len(guests) == 1
+                         else _SHARED_SINGER_COLOR) if guests else None
 
         for line_index in range(index + 1, end):
             line = lines[line_index]
@@ -431,6 +440,15 @@ def _render_singer_lyrics(lyrics, italics):
                 if singer in colors:
                     rendered.stylize(
                         colors[singer], offsets[line_index], offsets[line_index] + len(line)
+                    )
+            elif not has_marked_parts:
+                # Without per-line attribution, a heading crediting multiple
+                # singers means they share the section. Mark their joint
+                # lines with the guest's accent while lead-only sections stay
+                # plain. For larger groups use one consistent group accent.
+                if shared_accent:
+                    rendered.stylize(
+                        shared_accent, offsets[line_index], offsets[line_index] + len(line)
                     )
             elif len(names) == 2 and italic_singer in colors:
                 # A shared line can contain both voices. Only the source's
