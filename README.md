@@ -30,7 +30,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - MP3 Renaming and Trash-Safe Deletion
 - Multi-Song Selection and Bulk Actions
 - Automatic Pause for Screen Lock and Find My Alerts (macOS)
-- Non-Speaker Safety Mode (macOS)
+- Event-Driven Non-Speaker Safety Mode (macOS)
 - MP3 Filename Export
 - Responsive Terminal Interface
 - Unified Song, Playlist, and Analysis Cache
@@ -57,6 +57,10 @@ antarctiteex /path/to/music
 ```
 
 The `mp3-player` command is also available as an alias.
+
+On macOS, Non-Speaker Mode listens for output-device changes through CoreAudio
+and uses `SwitchAudioSource` to identify the new output. It pauses playback as
+soon as the output changes, then resumes it if the new output is safe.
 
 The player stores song metadata, playlists, settings, and analysis in a single
 `.mp3cache.json` file inside the selected music folder.

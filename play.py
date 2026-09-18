@@ -1,4 +1,5 @@
 import argparse
+import ctypes
 import difflib
 import html.parser
 import json
@@ -155,6 +156,7 @@ DURATION_REDRAW_S = 1.0
 SCREEN_LOCK_POLL_S = 2.0
 OUTPUT_SAFETY_ACTIVE_POLL_S = 2.0
 OUTPUT_SAFETY_IDLE_POLL_S = 10.0
+OUTPUT_SAFETY_FALLBACK_POLL_S = 0.5
 APPLE_RADIO_POLL_S = 5.0
 YT_PREVIEW_AUDIO_QUALITY = "0"
 YT_PREVIEW_FORMAT = "ba[ext=m4a]/ba[ext=mp3]/ba[ext=ogg]/ba[acodec^=mp4a]/ba[acodec^=opus]/ba/b"
@@ -175,6 +177,20 @@ LYRICS_CACHE_VERSION = 4
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
 _SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
+
+
+class _AudioObjectPropertyAddress(ctypes.Structure):
+    _fields_ = [
+        ("selector", ctypes.c_uint32),
+        ("scope", ctypes.c_uint32),
+        ("element", ctypes.c_uint32),
+    ]
+
+
+_AUDIO_PROPERTY_LISTENER = ctypes.CFUNCTYPE(
+    ctypes.c_int32, ctypes.c_uint32, ctypes.c_uint32,
+    ctypes.POINTER(_AudioObjectPropertyAddress), ctypes.c_void_p,
+)
 APPLE_RADIO_STATIONS = (
     {
         "name": "Apple Music 1",
@@ -684,6 +700,8 @@ class Player:
         self._last_session_snapshot = None
         self._current_output_device = ""
         self._output_safety_wakeup = threading.Event()
+        self._output_route_changed = threading.Event()
+        self._audio_output_listener = None
         self._safety_lock = threading.Lock()
         self._find_my_log_proc = None
         self._background_services_started = False
@@ -745,9 +763,9 @@ class Player:
             self._background_services_started = True
 
         def worker():
+            self._start_output_safety_watcher()
             self._start_media_key_listener()
             self._start_screen_lock_watcher()
-            self._start_output_safety_watcher()
             self._start_find_my_alert_watcher()
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1466,24 +1484,75 @@ class Player:
 
     def _handle_output_device(self, name):
         name = str(name or "").strip()
-        previous = self._current_output_device
         self._current_output_device = name
         is_speaker = self._is_builtin_speaker_name(name)
         if (
             name
-            and name != previous
             and self.non_speaker_mode
             and is_speaker
+            and not self.paused
         ):
             self._halt_for_speaker_safety()
         elif (
             name
-            and name != previous
             and self.non_speaker_mode
             and not is_speaker
             and self._paused_by_speaker_safety
         ):
             self._resume_from_speaker_safety()
+
+    def _install_output_change_listener(self):
+        """Wake the safety watcher when CoreAudio changes the default output."""
+        if sys.platform != "darwin":
+            return False
+        try:
+            coreaudio = ctypes.CDLL(
+                "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"
+            )
+            address = _AudioObjectPropertyAddress(
+                int.from_bytes(b"dOut", "big"),
+                int.from_bytes(b"glob", "big"), 0,
+            )
+
+            def changed(_object_id, _count, _addresses, _context):
+                if self.running and not self._shutting_down and self.non_speaker_mode:
+                    self._output_route_changed.set()
+                    self._output_safety_wakeup.set()
+                return 0
+
+            callback = _AUDIO_PROPERTY_LISTENER(changed)
+            add = coreaudio.AudioObjectAddPropertyListener
+            add.argtypes = [
+                ctypes.c_uint32, ctypes.POINTER(_AudioObjectPropertyAddress),
+                _AUDIO_PROPERTY_LISTENER, ctypes.c_void_p,
+            ]
+            add.restype = ctypes.c_int32
+            if add(1, ctypes.byref(address), callback, None) != 0:
+                return False
+            self._audio_output_listener = (coreaudio, address, callback)
+            if self._shutting_down or not self.running:
+                self._remove_output_change_listener()
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _remove_output_change_listener(self):
+        listener = self._audio_output_listener
+        self._audio_output_listener = None
+        if not listener:
+            return
+        coreaudio, address, callback = listener
+        try:
+            remove = coreaudio.AudioObjectRemovePropertyListener
+            remove.argtypes = [
+                ctypes.c_uint32, ctypes.POINTER(_AudioObjectPropertyAddress),
+                _AUDIO_PROPERTY_LISTENER, ctypes.c_void_p,
+            ]
+            remove.restype = ctypes.c_int32
+            remove(1, ctypes.byref(address), callback, None)
+        except Exception:
+            pass
 
     def _start_output_safety_watcher(self):
         if sys.platform != "darwin":
@@ -1491,6 +1560,7 @@ class Player:
         switch_audio = shutil.which("SwitchAudioSource")
         if not switch_audio:
             return
+        event_listener_ready = self._install_output_change_listener()
 
         def watch_output():
             while self.running and not self._shutting_down:
@@ -1502,6 +1572,10 @@ class Player:
                     self._output_safety_wakeup.wait(timeout=60.0)
                     self._output_safety_wakeup.clear()
                     continue
+                if self._output_route_changed.is_set():
+                    self._output_route_changed.clear()
+                    if self.current not in ("None", "Loading...") and not self.paused:
+                        self._halt_for_speaker_safety()
                 try:
                     result = subprocess.run(
                         [switch_audio, "-c", "-t", "output"],
@@ -1520,6 +1594,8 @@ class Player:
                     if active
                     else OUTPUT_SAFETY_IDLE_POLL_S
                 )
+                if active and not event_listener_ready:
+                    interval = OUTPUT_SAFETY_FALLBACK_POLL_S
                 self._output_safety_wakeup.wait(timeout=interval)
                 self._output_safety_wakeup.clear()
 
@@ -5845,6 +5921,8 @@ class Player:
                 "or you play another track"
             )
             self._play_start = time.monotonic()
+            self._handle_output_device(self._current_output_device)
+            self._output_safety_wakeup.set()
         except Exception:
             self.status_msg = "Could not play YouTube preview"
             self._cleanup_youtube_preview(stop_audio=True)
@@ -5920,6 +5998,8 @@ class Player:
             self._apply_volume(force=True)
             self.current = name
             self._play_start = time.monotonic()
+            self._handle_output_device(self._current_output_device)
+            self._output_safety_wakeup.set()
             self._queue_volume_multiplier_compute(name)
         except Exception as exc:
             self.current = "None"
@@ -5979,6 +6059,8 @@ class Player:
             self._apply_volume(force=True)
             self.current = name
             self._play_start = time.monotonic()
+            self._handle_output_device(self._current_output_device)
+            self._output_safety_wakeup.set()
             self._queue_volume_multiplier_compute(name)
         except Exception as exc:
             self.current = "None"
@@ -6045,6 +6127,9 @@ class Player:
             if was_paused:
                 pygame.mixer.music.pause()
             self.paused = was_paused
+            if not was_paused:
+                self._handle_output_device(self._current_output_device)
+                self._output_safety_wakeup.set()
         except Exception as exc:
             failed_name = self.current
             self.current = "None"
@@ -6088,8 +6173,7 @@ class Player:
             return
         if self.paused:
             if (
-                self._paused_by_speaker_safety
-                and self.non_speaker_mode
+                self.non_speaker_mode
                 and self._is_builtin_speaker_name(self._current_output_device)
             ):
                 self.status_msg = "Still paused: built-in speakers active"
@@ -6125,7 +6209,12 @@ class Player:
             if not self._ensure_mixer_ready():
                 return
             multiplier = max(0.0, min(1.0, float(self._current_volume_multiplier)))
-            pygame.mixer.music.set_volume(max(0.0, min(1.0, self.vol * multiplier)))
+            volume = max(0.0, min(1.0, self.vol * multiplier))
+            if self.non_speaker_mode and self._is_builtin_speaker_name(
+                self._current_output_device
+            ):
+                volume = 0.0
+            pygame.mixer.music.set_volume(volume)
             self._last_volume_apply_at = now
         except Exception:
             pass
@@ -8358,6 +8447,7 @@ class Player:
         self.running = False
         self._duration_load_wakeup.set()
         self._output_safety_wakeup.set()
+        self._remove_output_change_listener()
         # Apple Radio plays through the external Music app rather than
         # pygame, so it must be stopped explicitly on every shutdown path.
         self._stop_apple_radio_audio()
@@ -9405,10 +9495,9 @@ if TEXTUAL_AVAILABLE:
             self.refresh_playlists()
             self.refresh_ui(rebuild_table=True)
             self.set_interval(TEXTUAL_TICK_S, self.tick)
-            # Native media-key and macOS safety integrations can perform
-            # relatively expensive framework imports. Let the first screen
-            # paint and become interactive before starting them.
-            self.set_timer(1.0, self.player.start_background_services)
+            # Start the output-safety listener now; the setup runs in a
+            # background thread and does not delay the first screen paint.
+            self.player.start_background_services()
 
         def on_resize(self, event):
             # A resize event can arrive while Help or a context menu is the
@@ -10453,6 +10542,7 @@ if TEXTUAL_AVAILABLE:
                 p._output_safety_wakeup.set()
                 if not p.non_speaker_mode:
                     p._paused_by_speaker_safety = False
+                p._apply_volume(force=True)
                 if p.non_speaker_mode and p._is_builtin_speaker_name(p._current_output_device):
                     p._halt_for_speaker_safety()
             elif button_id == "show-tags-toggle":

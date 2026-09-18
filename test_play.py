@@ -729,6 +729,7 @@ class PureHelperTests(unittest.TestCase):
         player._shutting_down = False
         player.non_speaker_mode = False
         player._output_safety_wakeup = mock.Mock()
+        player._output_route_changed = play.threading.Event()
         player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
             player, "running", False
         )
@@ -736,6 +737,7 @@ class PureHelperTests(unittest.TestCase):
         with (
             mock.patch.object(play.sys, "platform", "darwin"),
             mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(player, "_install_output_change_listener", return_value=True),
             mock.patch.object(play.threading, "Thread", return_value=thread) as make_thread,
             mock.patch.object(play.subprocess, "run") as run,
         ):
@@ -753,6 +755,7 @@ class PureHelperTests(unittest.TestCase):
         player.paused = False
         player._handle_output_device = mock.Mock()
         player._output_safety_wakeup = mock.Mock()
+        player._output_route_changed = play.threading.Event()
         player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
             player, "running", False
         )
@@ -761,6 +764,7 @@ class PureHelperTests(unittest.TestCase):
         with (
             mock.patch.object(play.sys, "platform", "darwin"),
             mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(player, "_install_output_change_listener", return_value=True),
             mock.patch.object(play.threading, "Thread", return_value=thread) as make_thread,
             mock.patch.object(play.subprocess, "run", return_value=result) as run,
         ):
@@ -772,6 +776,119 @@ class PureHelperTests(unittest.TestCase):
         player._output_safety_wakeup.wait.assert_called_once_with(
             timeout=play.OUTPUT_SAFETY_ACTIVE_POLL_S
         )
+
+    def test_output_watcher_polls_faster_if_native_listener_is_unavailable(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.non_speaker_mode = True
+        player.current = "song"
+        player.paused = False
+        player._handle_output_device = mock.Mock()
+        player._output_route_changed = play.threading.Event()
+        player._output_safety_wakeup = mock.Mock()
+        player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
+            player, "running", False
+        )
+        with (
+            mock.patch.object(play.sys, "platform", "darwin"),
+            mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(player, "_install_output_change_listener", return_value=False),
+            mock.patch.object(play.threading, "Thread", return_value=mock.Mock()) as thread,
+            mock.patch.object(play.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="Headphones")),
+        ):
+            player._start_output_safety_watcher()
+            thread.call_args.kwargs["target"]()
+        player._output_safety_wakeup.wait.assert_called_once_with(
+            timeout=play.OUTPUT_SAFETY_FALLBACK_POLL_S
+        )
+
+    def test_coreaudio_output_change_wakes_watcher(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.non_speaker_mode = True
+        player._output_route_changed = play.threading.Event()
+        player._output_safety_wakeup = play.threading.Event()
+        player._audio_output_listener = None
+        coreaudio = mock.Mock()
+        coreaudio.AudioObjectAddPropertyListener.return_value = 0
+        with (
+            mock.patch.object(play.sys, "platform", "darwin"),
+            mock.patch.object(play.ctypes, "CDLL", return_value=coreaudio),
+        ):
+            self.assertTrue(player._install_output_change_listener())
+            callback = player._audio_output_listener[2]
+            callback(1, 1, None, None)
+            self.assertTrue(player._output_route_changed.is_set())
+            self.assertTrue(player._output_safety_wakeup.is_set())
+            player._remove_output_change_listener()
+        coreaudio.AudioObjectRemovePropertyListener.assert_called_once()
+
+    def test_output_change_pauses_before_query_and_resumes_on_headphones(self):
+        player = bare_player()
+        player.running = True
+        player._shutting_down = False
+        player.non_speaker_mode = True
+        player.current = "song"
+        player.paused = False
+        player._paused_by_speaker_safety = False
+        player._current_output_device = "Headphones"
+        player._output_route_changed = play.threading.Event()
+        player._output_route_changed.set()
+        player._output_safety_wakeup = mock.Mock()
+        player._output_safety_wakeup.wait.side_effect = lambda **_: setattr(
+            player, "running", False
+        )
+        calls = []
+
+        def pause():
+            calls.append("pause")
+            player.paused = True
+            player._paused_by_speaker_safety = True
+
+        def query(*_args, **_kwargs):
+            calls.append("query")
+            return mock.Mock(returncode=0, stdout="Headphones\n")
+
+        player._halt_for_speaker_safety = pause
+        player._resume_from_speaker_safety = mock.Mock()
+        with (
+            mock.patch.object(play.sys, "platform", "darwin"),
+            mock.patch.object(play.shutil, "which", return_value="/bin/SwitchAudioSource"),
+            mock.patch.object(player, "_install_output_change_listener", return_value=True),
+            mock.patch.object(play.threading, "Thread", return_value=mock.Mock()) as thread,
+            mock.patch.object(play.subprocess, "run", side_effect=query),
+        ):
+            player._start_output_safety_watcher()
+            thread.call_args.kwargs["target"]()
+        self.assertEqual(calls, ["pause", "query"])
+        player._resume_from_speaker_safety.assert_called_once()
+
+    def test_known_speaker_is_enforced_without_a_device_name_change(self):
+        player = bare_player()
+        player.current = "song"
+        player.paused = False
+        player.non_speaker_mode = True
+        player._current_output_device = "MacBook Air Speakers"
+        player._halt_for_speaker_safety = mock.Mock()
+        player._handle_output_device("MacBook Air Speakers")
+        player._halt_for_speaker_safety.assert_called_once()
+
+    def test_known_speaker_is_muted_before_playback_can_start(self):
+        player = bare_player()
+        player.non_speaker_mode = True
+        player._current_output_device = "MacBook Air Speakers"
+        player._current_volume_multiplier = 1.0
+        player._last_volume_apply_at = 0.0
+        player.vol = 0.6
+        player._ensure_mixer_ready = mock.Mock(return_value=True)
+        with mock.patch.object(play.pygame.mixer.music, "set_volume") as set_volume:
+            player._apply_volume(force=True)
+            set_volume.assert_called_with(0.0)
+            player._current_output_device = "Headphones"
+            player._apply_volume(force=True)
+            set_volume.assert_called_with(0.6)
 
     def test_volume_adjustment_clamps_and_applies_once(self):
         player = bare_player()
