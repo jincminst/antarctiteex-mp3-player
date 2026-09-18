@@ -130,6 +130,9 @@ online results are used. Numbers can stand for their spelled-out words: `[21P]`
 matches Twenty One Pilots (`TOP`). Naming a tagged playlist after the artist
 can also help the search find the right song. The lyrics search tries the
 number as English words too, so `[21P]` also searches with `twenty one P`.
+Joined artist names work too: `[1R] Counting Stars` matches OneRepublic.
+If searches using the tag miss, the player also searches by song title and
+accepts lyrics only when the result's artist matches the tag.
 
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.

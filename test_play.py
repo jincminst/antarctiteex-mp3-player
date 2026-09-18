@@ -1538,6 +1538,9 @@ class LyricsTests(unittest.TestCase):
         self.assertTrue(matches("Twenty-One Pilots", "TOP"))
         self.assertTrue(matches("21 Pilots", "TOP"))
         self.assertTrue(matches("One Direction", "1D"))
+        self.assertTrue(matches("OneRepublic", "1R"))
+        self.assertTrue(matches("OneRepublic", "OR"))
+        self.assertFalse(matches("OneRepublic", "1S"))
         self.assertFalse(matches("Twenty One Savage", "21P"))
         self.assertFalse(matches("Two One Pilots", "21P"))
         self.assertFalse(matches("Wrong Artist", "OR"))
@@ -1549,6 +1552,56 @@ class LyricsTests(unittest.TestCase):
             play.Player._artist_tag_query_variants("7R"),
             ["7R", "seven R", "SR"],
         )
+        self.assertEqual(
+            play.Player._artist_tag_query_variants("1R"),
+            ["1R", "one R", "OR"],
+        )
+
+    def test_counting_stars_accepts_onerepublic_from_abbreviated_query(self):
+        player = play.Player.__new__(play.Player)
+        hit = {"response": {"hits": [{"result": {
+            "title": "Counting Stars", "url": "https://genius.com/right",
+            "primary_artist": {"name": "OneRepublic"},
+        }}]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.object(player, "_search_genius", return_value=hit) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "1R", "artist_tag": "1R", "title": "Counting Stars",
+            })
+        search.assert_called_once_with("Counting Stars 1R")
+        self.assertEqual(result["text"], "[Verse 1]\nWords")
+
+    def test_counting_stars_falls_back_to_title_only_with_artist_check(self):
+        player = play.Player.__new__(play.Player)
+        empty = {"response": {"hits": []}}
+        wrong = {"result": {
+            "title": "Counting Stars", "url": "https://genius.com/wrong",
+            "primary_artist": {"name": "Other Record"},
+        }}
+        right = {"result": {
+            "title": "Counting Stars", "url": "https://genius.com/right",
+            "primary_artist": {"name": "OneRepublic"},
+        }}
+        title_hits = {"response": {"hits": [wrong, right]}}
+        page = '<div data-lyrics-container="true">[Verse 1]<br>Words</div>'
+        with (
+            mock.patch.object(player, "_search_genius",
+                              side_effect=[empty, empty, empty, title_hits]) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page) as fetch_page,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "1R", "artist_tag": "1R", "title": "Counting Stars",
+            })
+        self.assertEqual(
+            [call.args[0] for call in search.call_args_list],
+            ["Counting Stars 1R", "Counting Stars one R",
+             "Counting Stars OR", "Counting Stars"],
+        )
+        fetch_page.assert_called_once_with("https://genius.com/right")
+        self.assertEqual(result["source"], "Genius")
 
     def test_genius_tries_number_word_initials_and_rejects_wrong_artist(self):
         player = play.Player.__new__(play.Player)

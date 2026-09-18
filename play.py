@@ -2087,9 +2087,13 @@ class Player:
         wanted = normalized(tag)
         if not wanted:
             return False
-        words = re.findall(
-            r"[a-z0-9]+", unicodedata.normalize("NFKD", str(artist or "")).casefold()
+        # Artist names often join words with capitals (OneRepublic). Split
+        # those boundaries before lowercasing so 1R and OR both match.
+        artist_words = re.sub(
+            r"(?<=[a-z])(?=[A-Z])", " ",
+            unicodedata.normalize("NFKD", str(artist or "")),
         )
+        words = re.findall(r"[a-z0-9]+", artist_words.casefold())
         if wanted == normalized(artist):
             return True
         expanded = []
@@ -2381,7 +2385,8 @@ class Player:
 
         candidates = {}
         search_failed = False
-        for query_title in self._lyrics_title_variants(title):
+        title_variants = self._lyrics_title_variants(title)
+        for query_title in title_variants:
             for query_artist in query_artists:
                 try:
                     payload = self._search_genius(f"{query_title} {query_artist}")
@@ -2423,6 +2428,26 @@ class Player:
                     break
             if candidates or search_failed:
                 break
+
+        # Abbreviations can make Genius search miss an otherwise obvious
+        # title. A title-only query is safe because results still have to pass
+        # the exact-title and artist checks above.
+        if not candidates and not search_failed and tag:
+            for query_title in title_variants:
+                try:
+                    payload = self._search_genius(query_title)
+                except Exception:
+                    break
+                for hit in self._genius_song_hits(payload):
+                    result = hit.get("result", {}) if isinstance(hit, dict) else {}
+                    artist = str(result.get("primary_artist", {}).get("name", ""))
+                    candidate_title = str(result.get("title") or result.get("full_title") or "")
+                    page_url = str(result.get("url") or "").strip()
+                    title_score = self._genius_title_score(candidate_title, title)
+                    if page_url and title_score and self._artist_matches_tag(artist, tag):
+                        candidates[page_url] = (title_score + 35, result)
+                if candidates:
+                    break
 
         for page_url, (_score, _result) in sorted(
             candidates.items(), key=lambda item: item[1][0], reverse=True
