@@ -74,11 +74,10 @@ public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
 visible. The singer with the most solo lines keeps the normal text color;
-other credited singers and their lines get distinct colors. Genius italic
-markup separates singers' lines in a duet. If a two-singer section has no
-italic lines, the whole section uses the added singer's color so the duet is
-still visible. When neither name is italicized in the section heading,
-italic lines are assigned to the second listed singer. Lyrics are censored
+other credited singers get distinct colors. In a duet, Genius italic markup
+is used to color only the words attributed to an added singer, including
+their part of a shared line. If the markup does not identify which words
+belong to whom, the lyrics stay in the normal color. Lyrics are censored
 with better-profanity,
 including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
 stay visible.

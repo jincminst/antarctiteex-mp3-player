@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import html.parser
 import json
 import math
@@ -293,6 +294,42 @@ def _extract_lyric_italics(marked_text):
     return "\n".join(plain_lines), spans
 
 
+def _remap_lyric_italics(original, censored, italics):
+    """Keep italic ranges on the same words when censorship changes lengths."""
+    original_lines = original.split("\n")
+    censored_lines = censored.split("\n")
+    if len(original_lines) != len(censored_lines):
+        return []
+    remapped = []
+    for index, before in enumerate(original_lines):
+        after = censored_lines[index]
+        marked = [False] * len(before)
+        for start, finish in (italics[index] if index < len(italics) else []):
+            for position in range(max(0, start), min(len(before), finish)):
+                marked[position] = True
+        converted = [False] * len(after)
+        for operation, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, before, after, autojunk=False
+        ).get_opcodes():
+            if operation == "equal":
+                converted[j1:j2] = marked[i1:i2]
+            elif operation == "replace" and i1 < i2 and all(marked[i1:i2]):
+                converted[j1:j2] = [True] * (j2 - j1)
+            elif operation == "insert" and i1 > 0 and i1 < len(marked):
+                if marked[i1 - 1] and marked[i1]:
+                    converted[j1:j2] = [True] * (j2 - j1)
+        spans = []
+        start = None
+        for position, is_marked in enumerate(converted + [False]):
+            if is_marked and start is None:
+                start = position
+            elif not is_marked and start is not None:
+                spans.append([start, position])
+                start = None
+        remapped.append(spans)
+    return remapped
+
+
 def _render_singer_lyrics(lyrics, italics):
     """Leave the lead unstyled and color additional credited singers."""
     rendered = Text(lyrics)
@@ -364,15 +401,10 @@ def _render_singer_lyrics(lyrics, italics):
             cursor = finish
 
         if len(names) == 2 and italic_singer is None:
-            italic_singer = names[-1].casefold()
-        full_italic = set()
-        for line_index in range(index + 1, end):
-            spans = italics[line_index] if line_index < len(italics) else []
-            if lines[line_index].strip() and any(
-                start == 0 and finish >= len(lines[line_index].rstrip())
-                for start, finish in spans
-            ):
-                full_italic.add(line_index)
+            italic_singer = next(
+                (name.casefold() for name in names if name.casefold() != lead),
+                names[-1].casefold(),
+            )
 
         for line_index in range(index + 1, end):
             line = lines[line_index]
@@ -380,19 +412,45 @@ def _render_singer_lyrics(lyrics, italics):
                 continue
             if len(names) == 1:
                 singer = names[0].casefold()
-            elif len(names) == 2 and full_italic:
-                singer = (italic_singer if line_index in full_italic else
-                          next((name.casefold() for name in names
-                                if name.casefold() != italic_singer), None))
-            elif len(names) == 2:
-                # Without per-line cues, the whole duet marks the additional
-                # singer's presence rather than guessing who sang each line.
-                singer = next((name.casefold() for name in names
-                               if name.casefold() != lead), None)
-            else:
-                singer = None
-            if singer in colors:
-                rendered.stylize(colors[singer], offsets[line_index], offsets[line_index] + len(line))
+                if singer in colors:
+                    rendered.stylize(
+                        colors[singer], offsets[line_index], offsets[line_index] + len(line)
+                    )
+            elif len(names) == 2 and italic_singer in colors:
+                # A shared line can contain both voices. Only the source's
+                # italicized characters are attributed to the added singer.
+                spans = italics[line_index] if line_index < len(italics) else []
+                for start, finish in spans:
+                    start = max(0, min(len(line), start))
+                    finish = max(start, min(len(line), finish))
+                    if start < finish:
+                        rendered.stylize(
+                            colors[italic_singer],
+                            offsets[line_index] + start,
+                            offsets[line_index] + finish,
+                        )
+            elif len(names) == 2 and italic_singer == lead:
+                # An explicitly italicized lead credit makes the unitalicized
+                # parts the other singer's parts.
+                guest = next((name.casefold() for name in names
+                              if name.casefold() != lead), None)
+                if guest in colors:
+                    spans = italics[line_index] if line_index < len(italics) else []
+                    cursor = 0
+                    for start, finish in spans:
+                        start = max(0, min(len(line), start))
+                        finish = max(start, min(len(line), finish))
+                        if cursor < start:
+                            rendered.stylize(
+                                colors[guest], offsets[line_index] + cursor,
+                                offsets[line_index] + start,
+                            )
+                        cursor = max(cursor, finish)
+                    if cursor < len(line):
+                        rendered.stylize(
+                            colors[guest], offsets[line_index] + cursor,
+                            offsets[line_index] + len(line),
+                        )
     return rendered
 
 
@@ -2502,20 +2560,9 @@ class Player:
         if result and result.get("text"):
             clean_text = self._clean_lyrics_text(result.get("text"))
             censored_text = _censor_lyrics_text(clean_text)
-            italics = result.get("italics") or []
-            original_lines = clean_text.split("\n")
-            censored_lines = censored_text.split("\n")
-            # Censoring may change a line's length. Keep fully italicized
-            # lines fully marked so their singer color survives masking.
-            if len(original_lines) == len(censored_lines):
-                italics = [
-                    [[0, len(censored_lines[index])]
-                     if start == 0 and end >= len(original_lines[index])
-                     else [start, end]
-                     for start, end in line_spans]
-                    for index, line_spans in enumerate(italics)
-                    if index < len(original_lines)
-                ]
+            italics = _remap_lyric_italics(
+                clean_text, censored_text, result.get("italics") or []
+            )
             result = {
                 "text": censored_text,
                 "source": str(result.get("source") or "Lyrics"),

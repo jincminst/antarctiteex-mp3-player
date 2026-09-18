@@ -1206,7 +1206,7 @@ class LyricsTests(unittest.TestCase):
             'First line<br><span style="font-style: italic"><span>Second line</span></span><br>'
             'First again<br>'
             '<i>Emphasis</i> in a normal line<br>'
-            '[Chorus: Rowan Frost]<br>Solo line'
+            '[Chorus: Mira Vale]<br>Solo line'
             '</div>'
         )
         marked = play.Player._clean_lyrics_text(parser.marked_text())
@@ -1225,7 +1225,8 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(color_at("Rowan Frost"), color_at("Second line"))
         self.assertNotEqual(color_at("Mira Vale"), color_at("Rowan Frost"))
         self.assertEqual(color_at("First again"), color_at("Mira Vale"))
-        self.assertEqual(color_at("Solo line"), color_at("Rowan Frost"))
+        self.assertEqual(color_at("Solo line"), color_at("Mira Vale"))
+        self.assertIsNone(color_at(" in a normal line"))
 
     def test_italicized_credit_overrides_duet_order(self):
         parser = play._GeniusLyricsParser()
@@ -1247,7 +1248,7 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(color("Casey Lane"), color("Casey line"))
         self.assertNotEqual(color("Alex River"), color("Casey Lane"))
 
-    def test_lead_stays_plain_and_unmarked_bridge_shows_added_singer(self):
+    def test_lead_stays_plain_and_unmarked_bridge_does_not_guess_lines(self):
         lyrics = (
             "[Verse 1: Casey Lane]\nMain verse one\nMain verse two\n"
             "[Bridge: Casey Lane & Mira Vale]\nTogether here\nTogether again\n"
@@ -1264,8 +1265,8 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color("Main verse one"))
         self.assertIsNone(color("Main chorus"))
         self.assertIsNotNone(color("Mira Vale"))
-        self.assertEqual(color("Mira Vale"), color("Together here"))
-        self.assertEqual(color("Mira Vale"), color("Together again"))
+        self.assertIsNone(color("Together here"))
+        self.assertIsNone(color("Together again"))
 
     def test_italic_duet_only_colors_the_added_singer(self):
         lyrics = (
@@ -1283,6 +1284,48 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color("Lead bridge line"))
         self.assertIsNotNone(color("Guest bridge line"))
         self.assertEqual(color("Mira Vale"), color("Guest bridge line"))
+
+    def test_shared_bridge_colors_only_guest_span_even_when_guest_is_first(self):
+        lyrics = (
+            "[Verse: Casey Lane]\nLead verse one\nLead verse two\n"
+            "[Bridge: Mira Vale & Casey Lane]\nLead words, guest words"
+        )
+        start = len("Lead words, ")
+        italics = [[], [], [], [], [[start, start + len("guest words")]]]
+        rendered = play._render_singer_lyrics(lyrics, italics)
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color("Lead words"))
+        self.assertIsNotNone(color("guest words"))
+        self.assertEqual(color("Mira Vale"), color("guest words"))
+
+    def test_italicized_lead_credit_colors_only_guest_part_of_shared_line(self):
+        parser = play._GeniusLyricsParser()
+        parser.feed(
+            '<div data-lyrics-container="true">'
+            '[Verse: Casey Lane]<br>Lead verse one<br>Lead verse two<br>'
+            '[Bridge: Mira Vale &amp; <i>Casey Lane</i>]'
+            '<br>Guest opening, <i>lead ending</i>'
+            '</div>'
+        )
+        lyrics, italics = play._extract_lyric_italics(
+            play.Player._clean_lyrics_text(parser.marked_text())
+        )
+        rendered = play._render_singer_lyrics(lyrics, italics)
+
+        def color(fragment):
+            position = rendered.plain.index(fragment)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNotNone(color("Mira Vale"))
+        self.assertEqual(color("Mira Vale"), color("Guest opening"))
+        self.assertIsNone(color("lead ending"))
+        self.assertIsNone(color("Casey Lane"))
 
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)
@@ -1319,6 +1362,14 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertEqual(player.lyrics_text.splitlines()[-1], "****")
         self.assertEqual(player.lyrics_italics[-1], [[0, 4]])
+
+    def test_censoring_keeps_partial_guest_span_on_the_same_words(self):
+        self.assertEqual(
+            play._remap_lyric_italics(
+                "sex and guest", "**** and guest", [[[8, 13]]]
+            ),
+            [[[9, 14]]],
+        )
 
     def test_lyrics_filter_censors_disguised_words_without_changing_safe_text(self):
         self.assertEqual(
