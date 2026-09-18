@@ -1338,11 +1338,12 @@ class LyricsTests(unittest.TestCase):
                       if span.start <= position < span.end]
             return colors[-1] if colors else None
 
-        self.assertEqual(color_at("Mira Vale"), color_at("First line"))
+        self.assertIsNotNone(color_at("Mira Vale"))
+        self.assertIsNone(color_at("First line"))
         self.assertEqual(color_at("Rowan Frost"), color_at("Second line"))
         self.assertNotEqual(color_at("Mira Vale"), color_at("Rowan Frost"))
-        self.assertEqual(color_at("First again"), color_at("Mira Vale"))
-        self.assertEqual(color_at("Solo line"), color_at("Mira Vale"))
+        self.assertIsNone(color_at("First again"))
+        self.assertIsNone(color_at("Solo line"))
         self.assertIsNone(color_at(" in a normal line"))
 
     def test_italicized_credit_overrides_duet_order(self):
@@ -1361,7 +1362,8 @@ class LyricsTests(unittest.TestCase):
             position = rendered.plain.index(fragment)
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
-        self.assertEqual(color("Alex River"), color("Alex line"))
+        self.assertIsNotNone(color("Alex River"))
+        self.assertIsNone(color("Alex line"))
         self.assertEqual(color("Casey Lane"), color("Casey line"))
         self.assertNotEqual(color("Alex River"), color("Casey Lane"))
 
@@ -1382,8 +1384,8 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color("Main verse one"))
         self.assertIsNone(color("Main chorus"))
         self.assertIsNotNone(color("Mira Vale"))
-        self.assertEqual(color("Together here"), color("Mira Vale"))
-        self.assertEqual(color("Together again"), color("Mira Vale"))
+        self.assertEqual(color("Together here"), color("Together again"))
+        self.assertNotEqual(color("Together here"), color("Mira Vale"))
 
     def test_unmarked_three_singer_section_uses_group_accent(self):
         lyrics = (
@@ -1402,6 +1404,27 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNotNone(color("Khalid"))
         self.assertIsNotNone(color("Guest Singer"))
 
+    def test_joint_credit_colors_billie_separator_khalid_and_the_shared_line(self):
+        lyrics = (
+            "[Verse: Billie Eilish]\nBillie solo\n"
+            "[Chorus: Billie Eilish & Khalid]\nWe sing together"
+        )
+        rendered = play._render_singer_lyrics(lyrics, [])
+        chorus = lyrics.index("[Chorus:")
+
+        def color_at(position):
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color_at(lyrics.index("Billie Eilish")))
+        self.assertIsNone(color_at(lyrics.index("Billie solo")))
+        shared_color = color_at(lyrics.index("We sing together"))
+        self.assertIsNotNone(shared_color)
+        self.assertEqual(color_at(lyrics.index("Billie Eilish", chorus)), shared_color)
+        self.assertEqual(color_at(lyrics.index("&", chorus)), shared_color)
+        self.assertIsNotNone(color_at(lyrics.index("Khalid", chorus)))
+        self.assertNotEqual(color_at(lyrics.index("Khalid", chorus)), shared_color)
+
     def test_credited_duet_does_not_color_unmarked_lead_lines_when_parts_marked(self):
         lyrics = (
             "[Verse: Billie Eilish]\nLead solo\n"
@@ -1417,6 +1440,12 @@ class LyricsTests(unittest.TestCase):
 
         self.assertIsNone(color("Lead line"))
         self.assertEqual(color("Khalid"), color("Khalid line"))
+        chorus = lyrics.index("[Chorus:")
+        self.assertIsNotNone(color("Khalid & Billie Eilish"))
+        self.assertIsNotNone(next((span.style for span in rendered.spans
+                                   if span.start <= lyrics.index("&", chorus) < span.end), None))
+        self.assertIsNotNone(next((span.style for span in rendered.spans
+                                   if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None))
 
     def test_italic_duet_only_colors_the_added_singer(self):
         lyrics = (

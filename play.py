@@ -348,7 +348,7 @@ def _remap_lyric_italics(original, censored, italics):
 
 
 def _render_singer_lyrics(lyrics, italics):
-    """Leave the lead unstyled and color additional credited singers."""
+    """Color guest parts and joint credits while leaving lead solos plain."""
     rendered = Text(lyrics)
     lines = lyrics.split("\n")
     heading = re.compile(
@@ -406,31 +406,42 @@ def _render_singer_lyrics(lyrics, italics):
             line_index < len(italics) and italics[line_index]
             for line_index in range(index + 1, end)
         )
+        joint_credit = len(names) > 1
+        shared_section = joint_credit and not has_marked_parts
         italic_singer = None
         cursor = name_start
+        credit_end = len(lines[index]) - 1
         for name in names:
             start = lines[index].find(name, cursor)
             if start < 0:
                 continue
             finish = start + len(name)
             key = name.casefold()
-            if key in colors:
-                rendered.stylize(colors[key], offsets[index] + start, offsets[index] + finish)
+            if joint_credit and cursor < start:
+                rendered.stylize(
+                    _SHARED_SINGER_COLOR,
+                    offsets[index] + cursor, offsets[index] + start,
+                )
+            credit_color = colors.get(key, _SHARED_SINGER_COLOR if joint_credit else None)
+            if credit_color:
+                rendered.stylize(
+                    credit_color, offsets[index] + start, offsets[index] + finish,
+                )
             if any(start < span_end and finish > span_start
                    for span_start, span_end in header_spans):
                 italic_singer = key
             cursor = finish
+        if joint_credit and cursor < credit_end:
+            rendered.stylize(
+                _SHARED_SINGER_COLOR,
+                offsets[index] + cursor, offsets[index] + credit_end,
+            )
 
         if len(names) == 2 and italic_singer is None:
             italic_singer = next(
                 (name.casefold() for name in names if name.casefold() != lead),
                 names[-1].casefold(),
             )
-        guests = [name.casefold() for name in names
-                  if name.casefold() in colors]
-        shared_accent = (colors[guests[0]] if len(guests) == 1
-                         else _SHARED_SINGER_COLOR) if guests else None
-
         for line_index in range(index + 1, end):
             line = lines[line_index]
             if not line.strip():
@@ -441,15 +452,13 @@ def _render_singer_lyrics(lyrics, italics):
                     rendered.stylize(
                         colors[singer], offsets[line_index], offsets[line_index] + len(line)
                     )
-            elif not has_marked_parts:
+            elif shared_section:
                 # Without per-line attribution, a heading crediting multiple
-                # singers means they share the section. Mark their joint
-                # lines with the guest's accent while lead-only sections stay
-                # plain. For larger groups use one consistent group accent.
-                if shared_accent:
-                    rendered.stylize(
-                        shared_accent, offsets[line_index], offsets[line_index] + len(line)
-                    )
+                # singers means they share the section.
+                rendered.stylize(
+                    _SHARED_SINGER_COLOR,
+                    offsets[line_index], offsets[line_index] + len(line),
+                )
             elif len(names) == 2 and italic_singer in colors:
                 # A shared line can contain both voices. Only the source's
                 # italicized characters are attributed to the added singer.
