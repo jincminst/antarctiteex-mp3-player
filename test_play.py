@@ -2537,6 +2537,7 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(player.sort_reverse)
                     self.assertEqual(table.scroll_y, 0)
                     self.assertEqual(table.cursor_row, 0)
+                    self.assertFalse(table.show_cursor)
                     self.assertEqual(
                         table._music_highlighted_row_key, "Track 010"
                     )

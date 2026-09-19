@@ -8733,16 +8733,19 @@ if TEXTUAL_AVAILABLE:
             self, row_index, column_index, base_style, width,
             cursor=False, hover=False,
         ):
-            """Render the active media row without moving the table cursor."""
+            """Render the active row without enabling DataTable's own cursor."""
             highlighted = self._music_highlighted_row_key
             if row_index >= 0 and highlighted is not None:
                 try:
                     row_key = str(self._row_locations.get_key(row_index).value)
                 except Exception:
                     row_key = ""
-                cursor = row_key == highlighted
-            else:
-                cursor = False
+                if row_key == highlighted:
+                    base_style += self.get_component_rich_style("datatable--cursor")
+            # The real DataTable cursor can leave an isolated cursor-colored
+            # cell beside its scrollbar after scrolling. Playback highlighting
+            # is painted through base_style above, so keep that cursor disabled.
+            cursor = False
             return super()._render_cell(
                 row_index, column_index, base_style, width,
                 cursor=cursor, hover=hover,
@@ -9405,7 +9408,17 @@ if TEXTUAL_AVAILABLE:
         #workspace.youtube #playlists { display: none; }
         #workspace.youtube #playlist-resizer { display: none; }
         #workspace.youtube #library { border-left: solid #777777; }
-        #table { height: 1fr; scrollbar-size: 2 1; }
+        #table {
+            height: 1fr;
+            scrollbar-size: 2 1;
+            scrollbar-color: #aaaaaa;
+            scrollbar-color-hover: #888888;
+            scrollbar-color-active: #777777;
+            scrollbar-background: #fafaf7;
+            scrollbar-background-hover: #f1f1ed;
+            scrollbar-background-active: #eeeeea;
+            scrollbar-corner-color: #fafaf7;
+        }
         DataTable { background: #fafaf7; color: #111111; }
         DataTable:focus { background-tint: transparent; }
         DataTable > .datatable--header { background: #fafaf7; color: #111111; text-style: bold; }
@@ -10219,11 +10232,10 @@ if TEXTUAL_AVAILABLE:
                     # viewport pinned left so trackpad side-scroll cannot hide
                     # leading artist tags such as [21P] or [Aurora].
                     table.scroll_to(x=0, animate=False, force=True)
-                # SongTable paints the active media row with the cursor style,
-                # but keeps Textual's actual navigation cursor parked at row 0.
-                # Header sorting can then return to the top instead of chasing
-                # whichever MP3 is currently playing.
-                table.show_cursor = True
+                # SongTable paints the active media row itself. Keep Textual's
+                # navigation cursor hidden and parked at row 0 so it can't
+                # leave a stray dark cell or drag sorting back to the song.
+                table.show_cursor = False
                 table.move_cursor(row=0, column=0, scroll=False)
                 if p.youtube_preview_enabled:
                     preview_active = (
