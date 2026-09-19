@@ -2190,6 +2190,21 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
         test_case.assertLessEqual(region.right, width)
         test_case.assertLessEqual(region.bottom, height)
 
+    def test_playback_highlight_change_clears_textual_render_caches(self):
+        table = play.SongTable()
+        table._music_highlighted_row_key = "Old song"
+        with (
+            mock.patch.object(table, "_clear_caches", wraps=table._clear_caches) as clear,
+            mock.patch.object(table, "refresh") as refresh,
+        ):
+            self.assertTrue(table.set_music_highlighted_row_key("New song"))
+            clear.assert_called_once_with()
+            refresh.assert_called_once_with()
+
+            self.assertFalse(table.set_music_highlighted_row_key("New song"))
+            self.assertEqual(clear.call_count, 1)
+            self.assertEqual(refresh.call_count, 1)
+
     async def test_idle_tick_refreshes_transport_without_rebuilding_table(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(play.Player, "start_background_services"):

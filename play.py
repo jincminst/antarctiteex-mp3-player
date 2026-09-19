@@ -8748,6 +8748,20 @@ if TEXTUAL_AVAILABLE:
                 cursor=cursor, hover=hover,
             )
 
+        def set_music_highlighted_row_key(self, row_key):
+            """Change the playback highlight without retaining stale cells."""
+            if self._music_highlighted_row_key == row_key:
+                return False
+            self._music_highlighted_row_key = row_key
+            # Our playback key is deliberately independent of DataTable's
+            # navigation cursor, so it isn't part of Textual's line-cache key.
+            # Clear both line and cell caches before repainting; otherwise a
+            # fragment of the previous black row can survive an incremental
+            # update as a single dark character or cell.
+            self._clear_caches()
+            self.refresh()
+            return True
+
         class SongClicked(Message):
             def __init__(
                 self, row_key, column_index=0, button=1, shift=False,
@@ -10224,9 +10238,7 @@ if TEXTUAL_AVAILABLE:
                         ),
                         None,
                     )
-                    if table._music_highlighted_row_key != active_row_key:
-                        table._music_highlighted_row_key = active_row_key
-                        table.refresh()
+                    table.set_music_highlighted_row_key(active_row_key)
                     expected_keys = [f"youtube-{index}" for index in range(len(p.youtube_results))]
                     existing_keys = [str(row.key.value) for row in table.ordered_rows]
                     update_in_place = existing_keys == expected_keys
@@ -10276,9 +10288,7 @@ if TEXTUAL_AVAILABLE:
                 if not update_in_place:
                     table.clear()
                 active_row_key = p.current if p.current in p.songs else None
-                if table._music_highlighted_row_key != active_row_key:
-                    table._music_highlighted_row_key = active_row_key
-                    table.refresh()
+                table.set_music_highlighted_row_key(active_row_key)
                 for index, name in enumerate(p.songs, 1):
                     duration_ms = p._cached_duration_ms(name)
                     def cell(value, justify="left"):
