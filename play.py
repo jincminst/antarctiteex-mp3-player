@@ -163,7 +163,12 @@ YT_PREVIEW_FORMAT = "ba[ext=m4a]/ba[ext=mp3]/ba[ext=ogg]/ba[acodec^=mp4a]/ba[aco
 YT_DLP_CONCURRENT_FRAGMENTS = "4"
 YT_DLP_RETRIES = "2"
 YT_DLP_COOKIES_FROM_BROWSER = "edge"
-YT_DLP_JS_RUNTIME = "quickjs"
+YT_DLP_JS_RUNTIMES = (
+    ("deno", "deno"),
+    ("node", "node"),
+    ("quickjs", "qjs"),
+    ("bun", "bun"),
+)
 YT_DLP_IMPERSONATE = "chrome"
 YT_DOWNLOAD_FORMAT = "ba/b"
 YT_STATS_WORKERS = 3
@@ -5093,8 +5098,8 @@ class Player:
         cmd = [YT_DLP_BIN, "--ignore-config"]
         if YT_DLP_IMPERSONATE and self._yt_dlp_impersonation_available():
             cmd.extend(["--impersonate", YT_DLP_IMPERSONATE])
-        if use_js_runtime and YT_DLP_JS_RUNTIME:
-            cmd.extend(["--js-runtimes", YT_DLP_JS_RUNTIME])
+        if use_js_runtime:
+            cmd.extend(self._yt_dlp_js_runtime_args())
         cmd.extend(
             [
                 "--no-cache-dir",
@@ -5112,6 +5117,15 @@ class Player:
             cmd.extend(["--cookies-from-browser", YT_DLP_COOKIES_FROM_BROWSER])
         cmd.extend(args)
         return cmd
+
+    @staticmethod
+    def _yt_dlp_js_runtime_args():
+        """Enable the best installed EJS runtime using its absolute path."""
+        for runtime, executable in YT_DLP_JS_RUNTIMES:
+            path = shutil.which(executable)
+            if path:
+                return ["--js-runtimes", f"{runtime}:{path}"]
+        return []
 
     def _yt_dlp_impersonation_available(self):
         """Return whether this yt-dlp install can use the requested browser."""
@@ -5288,8 +5302,16 @@ class Player:
             return f"YouTube still wants verification. Sign into YouTube in {browser}, then retry."
         if "HTTP Error 403" in err or "Forbidden" in err:
             return "YouTube blocked the media request"
-        if "Signature solving failed" in err or "n challenge solving failed" in err:
-            return "yt-dlp needs QuickJS/EJS to solve YouTube signatures"
+        lowered = err.lower()
+        if "no supported javascript runtime" in lowered:
+            return "yt-dlp needs Deno, Node, or QuickJS for YouTube"
+        if (
+            "signature solving failed" in lowered
+            or "n challenge solving failed" in lowered
+            or "external javascript" in lowered
+            or "yt-dlp-ejs" in lowered
+        ):
+            return "yt-dlp-ejs is missing or outdated"
         if "Only images are available" in err or "downloaded file is empty" in err:
             return "YouTube returned no playable audio/video formats"
         if "--cookies-from-browser" in err or "cookies" in err.lower():

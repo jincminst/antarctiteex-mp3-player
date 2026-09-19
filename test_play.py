@@ -1300,6 +1300,38 @@ class PureHelperTests(unittest.TestCase):
         index = command.index("--impersonate")
         self.assertEqual(command[index + 1], "chrome")
 
+    def test_ytdlp_selects_an_installed_js_runtime_with_absolute_path(self):
+        available = {
+            "deno": None,
+            "node": "/opt/homebrew/bin/node",
+            "qjs": "/opt/homebrew/bin/qjs",
+            "bun": None,
+        }
+        with mock.patch.object(play.shutil, "which", side_effect=available.get):
+            self.assertEqual(
+                play.Player._yt_dlp_js_runtime_args(),
+                ["--js-runtimes", "node:/opt/homebrew/bin/node"],
+            )
+
+    def test_ytdlp_omits_js_runtime_option_when_none_is_installed(self):
+        with mock.patch.object(play.shutil, "which", return_value=None):
+            self.assertEqual(play.Player._yt_dlp_js_runtime_args(), [])
+
+    def test_ytdlp_reports_runtime_and_ejs_failures_separately(self):
+        player = bare_player()
+        runtime = mock.Mock(
+            stderr="ERROR: No supported JavaScript runtime could be found",
+            stdout="",
+        )
+        scripts = mock.Mock(
+            stderr="WARNING: Signature solving failed because yt-dlp-ejs is unavailable",
+            stdout="",
+        )
+        self.assertIn("Deno, Node, or QuickJS", player._yt_dlp_error(runtime))
+        self.assertEqual(
+            player._yt_dlp_error(scripts), "yt-dlp-ejs is missing or outdated"
+        )
+
     def test_time_and_truncation_formatters(self):
         self.assertEqual(play.Player._fmt_time(65_000), "1:05")
         self.assertEqual(play.Player._fmt_yt_duration(3_661), "1:01:01")

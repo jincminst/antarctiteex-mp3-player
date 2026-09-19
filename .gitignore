@@ -8,6 +8,7 @@ build/
 dist/
 *.egg-info/
 .venv/
+uv.lock
 .mp3meta.json
 .idea/
 error.txt

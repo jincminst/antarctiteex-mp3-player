@@ -142,6 +142,11 @@ normal text color.
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.
 
+Full YouTube support also needs an external JavaScript runtime. The player
+automatically uses an installed Deno, Node, QuickJS (`qjs`), or Bun executable
+and passes its absolute path to yt-dlp. The package installs yt-dlp's matching
+EJS scripts through the `yt-dlp[default]` dependency group.
+
 ## Development
 
 Run the test suite with:
