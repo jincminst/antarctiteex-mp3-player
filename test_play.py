@@ -1274,6 +1274,32 @@ class PureHelperTests(unittest.TestCase):
             ["yt-dlp", "--quiet", "url"],
         )
 
+    def test_ytdlp_omits_unavailable_browser_impersonation(self):
+        player = bare_player()
+        listing = mock.Mock(
+            returncode=0,
+            stdout="Chrome  -  curl_cffi (unavailable)\n",
+            stderr="",
+        )
+        with mock.patch.object(play.subprocess, "run", return_value=listing) as run:
+            first = player._yt_dlp_cmd("--dump-single-json", "ytsearch1:test")
+            second = player._yt_dlp_cmd("--version")
+        self.assertNotIn("--impersonate", first)
+        self.assertNotIn("--impersonate", second)
+        run.assert_called_once()
+
+    def test_ytdlp_uses_available_browser_impersonation(self):
+        player = bare_player()
+        listing = mock.Mock(
+            returncode=0,
+            stdout="Chrome  -  curl_cffi>=0.11\n",
+            stderr="",
+        )
+        with mock.patch.object(play.subprocess, "run", return_value=listing):
+            command = player._yt_dlp_cmd("--version")
+        index = command.index("--impersonate")
+        self.assertEqual(command[index + 1], "chrome")
+
     def test_time_and_truncation_formatters(self):
         self.assertEqual(play.Player._fmt_time(65_000), "1:05")
         self.assertEqual(play.Player._fmt_yt_duration(3_661), "1:01:01")

@@ -5091,7 +5091,7 @@ class Player:
 
     def _yt_dlp_cmd(self, *args, use_cookies=False, use_js_runtime=True):
         cmd = [YT_DLP_BIN, "--ignore-config"]
-        if YT_DLP_IMPERSONATE:
+        if YT_DLP_IMPERSONATE and self._yt_dlp_impersonation_available():
             cmd.extend(["--impersonate", YT_DLP_IMPERSONATE])
         if use_js_runtime and YT_DLP_JS_RUNTIME:
             cmd.extend(["--js-runtimes", YT_DLP_JS_RUNTIME])
@@ -5112,6 +5112,43 @@ class Player:
             cmd.extend(["--cookies-from-browser", YT_DLP_COOKIES_FROM_BROWSER])
         cmd.extend(args)
         return cmd
+
+    def _yt_dlp_impersonation_available(self):
+        """Return whether this yt-dlp install can use the requested browser."""
+        cached = getattr(self, "_yt_dlp_impersonation_supported", None)
+        if cached is not None:
+            return cached
+        lock = getattr(self, "_yt_dlp_impersonation_lock", None)
+        if lock is None:
+            lock = self._yt_dlp_impersonation_lock = threading.Lock()
+        with lock:
+            cached = getattr(self, "_yt_dlp_impersonation_supported", None)
+            if cached is not None:
+                return cached
+            supported = False
+            try:
+                proc = subprocess.run(
+                    [YT_DLP_BIN, "--ignore-config", "--list-impersonate-targets"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=4,
+                    check=False,
+                )
+                target = YT_DLP_IMPERSONATE.casefold()
+                for line in (proc.stdout or "").splitlines():
+                    fields = line.strip().split()
+                    if (
+                        fields
+                        and fields[0].casefold().startswith(target)
+                        and "unavailable" not in line.casefold()
+                    ):
+                        supported = True
+                        break
+            except Exception:
+                supported = False
+            self._yt_dlp_impersonation_supported = supported
+            return supported
 
     @staticmethod
     def _terminate_proc(proc):
