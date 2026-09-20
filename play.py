@@ -2686,6 +2686,35 @@ class Player:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _discard_cached_lyrics(self, names):
+        """Forget saved lyrics for songs that no longer exist in the library."""
+        names = set(names)
+        if not names:
+            return False
+        changed = False
+        memory_cache = getattr(self, "_lyrics_memory_cache", {})
+        meta = getattr(self, "meta", {})
+        for name in names:
+            if memory_cache.pop(name, None) is not None:
+                changed = True
+            entry = meta.get(name)
+            if isinstance(entry, dict) and "lyrics_cache" in entry:
+                entry.pop("lyrics_cache", None)
+                changed = True
+        if getattr(self, "lyrics_song", "") in names:
+            # Invalidate an in-flight lookup so it cannot restore lyrics after
+            # its MP3 has been deleted.
+            self._lyrics_request_id += 1
+            self.lyrics_song = ""
+            self.lyrics_status = ""
+            self.lyrics_text = ""
+            self.lyrics_italics = []
+            self.lyrics_source = ""
+            self.lyrics_source_url = ""
+            self._lyrics_loading = False
+            changed = True
+        return changed
+
     def _finish_lyrics_request(self, request_id, name, result, error=""):
         if request_id != self._lyrics_request_id or name != self.lyrics_song:
             return
@@ -3268,7 +3297,9 @@ class Player:
         self._rebuild()
         after = set(self.all_songs)
         added = len(after - before)
-        removed = len(before - after)
+        removed_songs = before - after
+        removed = len(removed_songs)
+        self._discard_cached_lyrics(removed_songs)
         if current in before and current not in after:
             try:
                 pygame.mixer.music.stop()
@@ -3748,6 +3779,7 @@ class Player:
             for playlist in self.playlists.values():
                 while song in playlist:
                     playlist.remove(song)
+            self._discard_cached_lyrics([song])
             self.selected_songs.discard(song)
             if self.current == song:
                 try:

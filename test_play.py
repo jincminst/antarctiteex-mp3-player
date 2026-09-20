@@ -313,6 +313,18 @@ class InitializationIntegrationTests(unittest.TestCase):
             player._song_len_ms = 0
             player.paused = False
             player.playlists = {"Mix": ["song"]}
+            player.meta = {
+                "song": {"plays": 4, "lyrics_cache": {"text": "cached words"}}
+            }
+            player._lyrics_memory_cache = {"song": {"text": "cached words"}}
+            player._lyrics_request_id = 2
+            player.lyrics_song = "song"
+            player.lyrics_status = ""
+            player.lyrics_text = "cached words"
+            player.lyrics_italics = []
+            player.lyrics_source = "Genius"
+            player.lyrics_source_url = "https://genius.com/song"
+            player._lyrics_loading = True
             player.selected_songs = {"song"}
             player.focused = "search"
             player._needs_redraw_hdr = False
@@ -335,6 +347,12 @@ class InitializationIntegrationTests(unittest.TestCase):
             self.assertEqual(trashed, [str(path)])
             self.assertFalse(path.exists())
             self.assertEqual(player.playlists["Mix"], [])
+            self.assertEqual(player.meta["song"], {"plays": 4})
+            self.assertNotIn("song", player._lyrics_memory_cache)
+            self.assertEqual(player._lyrics_request_id, 3)
+            self.assertEqual(player.lyrics_song, "")
+            self.assertEqual(player.lyrics_text, "")
+            self.assertFalse(player._lyrics_loading)
             self.assertEqual(player.status_msg, "Moved 1 MP3 to Trash")
 
     def test_failed_trash_move_does_not_remove_playlist_entry(self):
@@ -345,6 +363,17 @@ class InitializationIntegrationTests(unittest.TestCase):
         player._song_len_ms = 1000
         player.paused = False
         player.playlists = {"Mix": ["song"]}
+        cached = {"text": "keep this"}
+        player.meta = {"song": {"lyrics_cache": cached}}
+        player._lyrics_memory_cache = {"song": cached}
+        player._lyrics_request_id = 1
+        player.lyrics_song = "song"
+        player.lyrics_status = ""
+        player.lyrics_text = "keep this"
+        player.lyrics_italics = []
+        player.lyrics_source = "Genius"
+        player.lyrics_source_url = ""
+        player._lyrics_loading = False
         player.selected_songs = {"song"}
         player.focused = "search"
         player._needs_redraw_hdr = False
@@ -359,6 +388,9 @@ class InitializationIntegrationTests(unittest.TestCase):
             player._confirm_delete_mp3()
         self.assertEqual(player.playlists["Mix"], ["song"])
         self.assertEqual(player.current, "song")
+        self.assertEqual(player.meta["song"]["lyrics_cache"], cached)
+        self.assertEqual(player._lyrics_memory_cache["song"], cached)
+        self.assertEqual(player.lyrics_text, "keep this")
         self.assertEqual(player.status_msg, "Moved 0 to Trash, failed 1")
 
     def test_constructor_scans_library_and_tolerates_legacy_metadata(self):
