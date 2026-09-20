@@ -427,7 +427,10 @@ def _render_singer_lyrics(lyrics, italics):
                     _SHARED_SINGER_COLOR,
                     offsets[index] + cursor, offsets[index] + start,
                 )
-            credit_color = colors.get(key, _SHARED_SINGER_COLOR if joint_credit else None)
+            # The lead singer is the meaning of the normal text color. Keep
+            # their name plain even in a joint credit so the heading remains
+            # a reliable key for the uncolored lead lines below it.
+            credit_color = colors.get(key)
             if credit_color:
                 rendered.stylize(
                     credit_color, offsets[index] + start, offsets[index] + finish,

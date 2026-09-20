@@ -1428,10 +1428,10 @@ class LyricsTests(unittest.TestCase):
                       if span.start <= position < span.end]
             return colors[-1] if colors else None
 
-        self.assertIsNotNone(color_at("Mira Vale"))
+        self.assertIsNone(color_at("Mira Vale"))
         self.assertIsNone(color_at("First line"))
         self.assertEqual(color_at("Rowan Frost"), color_at("Second line"))
-        self.assertNotEqual(color_at("Mira Vale"), color_at("Rowan Frost"))
+        self.assertIsNotNone(color_at("Rowan Frost"))
         self.assertIsNone(color_at("First again"))
         self.assertIsNone(color_at("Solo line"))
         self.assertIsNone(color_at(" in a normal line"))
@@ -1452,10 +1452,10 @@ class LyricsTests(unittest.TestCase):
             position = rendered.plain.index(fragment)
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
-        self.assertIsNotNone(color("Alex River"))
+        self.assertIsNone(color("Alex River"))
         self.assertIsNone(color("Alex line"))
         self.assertEqual(color("Casey Lane"), color("Casey line"))
-        self.assertNotEqual(color("Alex River"), color("Casey Lane"))
+        self.assertIsNotNone(color("Casey Lane"))
 
     def test_lead_stays_plain_and_unmarked_duet_colors_shared_lines(self):
         lyrics = (
@@ -1510,7 +1510,7 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color_at(lyrics.index("Billie solo")))
         shared_color = color_at(lyrics.index("We sing together"))
         self.assertIsNotNone(shared_color)
-        self.assertEqual(color_at(lyrics.index("Billie Eilish", chorus)), shared_color)
+        self.assertIsNone(color_at(lyrics.index("Billie Eilish", chorus)))
         self.assertEqual(color_at(lyrics.index("&", chorus)), shared_color)
         self.assertIsNotNone(color_at(lyrics.index("Khalid", chorus)))
         self.assertNotEqual(color_at(lyrics.index("Khalid", chorus)), shared_color)
@@ -1534,8 +1534,8 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNotNone(color("Khalid & Billie Eilish"))
         self.assertIsNotNone(next((span.style for span in rendered.spans
                                    if span.start <= lyrics.index("&", chorus) < span.end), None))
-        self.assertIsNotNone(next((span.style for span in rendered.spans
-                                   if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None))
+        self.assertIsNone(next((span.style for span in rendered.spans
+                               if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None))
 
     def test_italic_duet_only_colors_the_added_singer(self):
         lyrics = (
