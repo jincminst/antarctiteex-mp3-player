@@ -1107,11 +1107,35 @@ class Player:
         weighted = self._shuffle_weight_rows(songs)
         if not weighted:
             return None
+        current_artist = self._shuffle_artist_key(self.current)
+        if current_artist:
+            different_artist = [
+                row for row in weighted
+                if self._shuffle_artist_key(row["name"]) != current_artist
+            ]
+            # Avoid back-to-back tracks by the same tagged artist whenever
+            # the active playlist has another artist to choose from. A
+            # single-artist playlist keeps its normal weighted behavior.
+            if different_artist:
+                weighted = different_artist
         choices = [row["name"] for row in weighted]
         weights = [row["weight"] for row in weighted]
         if len(choices) == 1:
             return choices[0]
         return random.choices(choices, weights=weights, k=1)[0]
+
+    @staticmethod
+    def _shuffle_artist_key(name):
+        """Return a generic artist identity when the filename supplies one."""
+        label = str(name or "").strip()
+        tagged = re.match(r"^\[([^\]]+)\]", label)
+        if tagged:
+            return tagged.group(1).strip().casefold()
+        if " - " in label:
+            artist, title = label.split(" - ", 1)
+            if artist.strip() and title.strip():
+                return artist.strip().casefold()
+        return ""
 
     def _shuffle_weight_candidates(self):
         if self.songs:

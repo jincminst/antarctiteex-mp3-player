@@ -1403,6 +1403,34 @@ class PureHelperTests(unittest.TestCase):
         weights = {row["name"]: row["weight"] for row in rows}
         self.assertGreater(weights["a"], weights["c"])
 
+    def test_shuffle_avoids_current_artist_without_hardcoded_tags(self):
+        player = bare_player()
+        player.current = "[ANY TAG] current"
+        songs = ["[ANY TAG] another", "[OTHER] option", "Unknown song"]
+        player._plays_cache = {name: 0 for name in [player.current, *songs]}
+
+        with mock.patch.object(
+            play.random, "choices", return_value=["[OTHER] option"]
+        ) as choose:
+            selected = player._weighted_shuffle_choice(songs)
+
+        self.assertEqual(selected, "[OTHER] option")
+        self.assertEqual(choose.call_args.args[0], ["[OTHER] option", "Unknown song"])
+
+    def test_single_artist_playlist_keeps_working_in_shuffle(self):
+        player = bare_player()
+        player.current = "[ARTIST] current"
+        songs = ["[ARTIST] second", "[ARTIST] third"]
+        player._plays_cache = {name: 0 for name in [player.current, *songs]}
+
+        with mock.patch.object(
+            play.random, "choices", return_value=["[ARTIST] third"]
+        ) as choose:
+            selected = player._weighted_shuffle_choice(songs)
+
+        self.assertEqual(selected, "[ARTIST] third")
+        self.assertEqual(choose.call_args.args[0], songs)
+
 
 class LyricsTests(unittest.TestCase):
     def test_genius_italics_color_singers_from_section_credits(self):
