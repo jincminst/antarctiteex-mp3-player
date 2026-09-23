@@ -1146,6 +1146,19 @@ class Player:
             return list(self.all_songs)
         return self._playlist_song_names(self.play_tab)
 
+    def _live_shuffle_candidates(self):
+        """Build the automatic-shuffle pool from MP3s present right now."""
+        live_songs = self._scan_song_names()
+        play_tab = getattr(self, "play_tab", "All")
+        if play_tab == "All":
+            return live_songs
+        tag = self._playlist_tag(play_tab)
+        if tag:
+            prefix = f"[{tag}]".casefold()
+            return [name for name in live_songs if name.casefold().startswith(prefix)]
+        members = set(getattr(self, "playlists", {}).get(play_tab, []))
+        return [name for name in live_songs if name in members]
+
     def _shuffle_weight_rows_for_view(self):
         rows = self._shuffle_weight_rows(
             self._shuffle_weight_candidates(), exclude_current=False
@@ -3178,8 +3191,9 @@ class Player:
                     if not pygame.mixer.music.get_busy():
                         if self._pending_shuffle_next is None and self.play_pool:
                             self._queue_play_inc(current, playback_id, 1)
+                            live_candidates = self._live_shuffle_candidates()
                             self._pending_shuffle_next = (
-                                self._weighted_shuffle_choice(self.play_pool)
+                                self._weighted_shuffle_choice(live_candidates)
                             )
                             self._wake_ui()
                     continue

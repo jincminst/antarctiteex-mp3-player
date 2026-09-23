@@ -1431,6 +1431,31 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(selected, "[ARTIST] third")
         self.assertEqual(choose.call_args.args[0], songs)
 
+    def test_live_shuffle_pool_ignores_orphan_metadata_and_restores_redownload(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, "present.mp3").touch()
+            Path(folder, "redownloaded.mp3").touch()
+            player.play_tab = "All"
+            player.meta = {
+                "deleted": {"plays": 1},
+                "present": {"plays": 8},
+                "redownloaded": {"plays": 37},
+            }
+            player._plays_cache = {
+                name: player._extract_count(entry)
+                for name, entry in player.meta.items()
+            }
+
+            candidates = player._live_shuffle_candidates()
+            rows = player._shuffle_weight_rows(candidates, exclude_current=False)
+
+        self.assertEqual(candidates, ["present", "redownloaded"])
+        self.assertNotIn("deleted", {row["name"] for row in rows})
+        restored = next(row for row in rows if row["name"] == "redownloaded")
+        self.assertEqual(restored["plays"], 37)
+
 
 class LyricsTests(unittest.TestCase):
     def test_genius_italics_color_singers_from_section_credits(self):
