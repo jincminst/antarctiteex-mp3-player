@@ -751,8 +751,8 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(list(player._duration_load_queue), ["song"])
 
     def test_energy_saving_poll_rates_avoid_rapid_process_churn(self):
-        self.assertGreaterEqual(play.OUTPUT_SAFETY_ACTIVE_POLL_S, 1.0)
-        self.assertGreaterEqual(play.OUTPUT_SAFETY_IDLE_POLL_S, 5.0)
+        self.assertGreaterEqual(play.OUTPUT_SAFETY_ACTIVE_POLL_S, 30.0)
+        self.assertGreaterEqual(play.OUTPUT_SAFETY_IDLE_POLL_S, 60.0)
         self.assertEqual(play.TEXTUAL_TICK_S, 1.0)
 
     def test_output_watcher_spawns_nothing_while_safety_is_disabled(self):
@@ -2348,6 +2348,39 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(clear.call_count, 1)
             self.assertEqual(refresh.call_count, 1)
 
+    def test_duration_bar_repaints_only_when_a_terminal_cell_changes(self):
+        bar = play.DurationBar()
+        bar.elapsed = 10
+        bar.duration = 1000
+        size = mock.Mock(width=100)
+        with (
+            mock.patch.object(
+                type(bar), "size", new_callable=mock.PropertyMock,
+                return_value=size,
+            ),
+            mock.patch.object(bar, "refresh") as refresh,
+        ):
+            bar.set_progress(11, 1000)
+            refresh.assert_not_called()
+            bar.set_progress(20, 1000)
+            refresh.assert_called_once_with()
+
+    async def test_unchanged_library_refresh_skips_cell_updates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "First.mp3").touch()
+            Path(folder, "Second.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 24)) as pilot:
+                    await pilot.pause()
+                    table = app.query_one("#table")
+                    app.refresh_ui(rebuild_table=True)
+                    with mock.patch.object(
+                        table, "update_cell", wraps=table.update_cell
+                    ) as update_cell:
+                        app.refresh_ui(rebuild_table=True)
+                    update_cell.assert_not_called()
+
     async def test_idle_tick_refreshes_transport_without_rebuilding_table(self):
         with tempfile.TemporaryDirectory() as folder:
             with mock.patch.object(play.Player, "start_background_services"):
@@ -2457,6 +2490,12 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn(
                         "[Verse 1]", str(app.query_one("#lyrics-content").render())
                     )
+                    lyrics_content = app.query_one("#lyrics-content")
+                    with mock.patch.object(
+                        lyrics_content, "update", wraps=lyrics_content.update
+                    ) as update:
+                        app._sync_lyrics_panel()
+                    update.assert_not_called()
                     panel = app.query_one("#lyrics-panel")
                     resizer = app.query_one("#lyrics-resizer")
                     playlists = app.query_one("#playlists")

@@ -136,7 +136,10 @@ AUDIO_BUFFER_SIZE = 8192
 INITIAL_INTERNAL_VOL = 0.4
 CACHE_FILE = ".mp3cache.json"
 CACHE_VERSION = 3
-SESSION_SAVE_INTERVAL_S = 5.0
+# Persist the exact position on clean shutdown.  During playback, a longer
+# checkpoint avoids rewriting (and fsyncing) the unified cache every few
+# seconds while still keeping crash recovery reasonably current.
+SESSION_SAVE_INTERVAL_S = 15.0
 LEGACY_META_FILE = ".mp3meta.json"
 LEGACY_PLAYLISTS_FILE = ".mp3playlists.json"
 LEGACY_ANALYSIS_FILE = ".mp3analysis.json"
@@ -154,8 +157,11 @@ VOLUME_ENFORCE_S = 1.0
 PLAYBACK_POLL_S = 1.0
 DURATION_REDRAW_S = 1.0
 SCREEN_LOCK_POLL_S = 2.0
-OUTPUT_SAFETY_ACTIVE_POLL_S = 2.0
-OUTPUT_SAFETY_IDLE_POLL_S = 10.0
+# CoreAudio wakes the watcher immediately on a route change. These are only
+# backstops for a missed native event, so keep process-based device checks
+# infrequent; the no-listener fallback below remains intentionally fast.
+OUTPUT_SAFETY_ACTIVE_POLL_S = 30.0
+OUTPUT_SAFETY_IDLE_POLL_S = 60.0
 OUTPUT_SAFETY_FALLBACK_POLL_S = 0.5
 APPLE_RADIO_POLL_S = 5.0
 YT_PREVIEW_AUDIO_QUALITY = "0"
@@ -1855,7 +1861,9 @@ class Player:
             )
             try:
                 with os.fdopen(fd, "w") as f:
-                    json.dump(cache, f, indent=2)
+                    # The cache can contain full lyric documents. Compact JSON
+                    # substantially reduces serialization work and disk I/O.
+                    json.dump(cache, f, ensure_ascii=False, separators=(",", ":"))
                     f.write("\n")
                     f.flush()
                     os.fsync(f.fileno())
@@ -9040,15 +9048,27 @@ if TEXTUAL_AVAILABLE:
             self.elapsed = 0.0
             self.duration = 0.0
 
+        def _filled_cells(self):
+            width = max(1, self.size.width)
+            ratio = min(1.0, self.elapsed / self.duration) if self.duration else 0.0
+            return min(width, max(0, round(width * ratio)))
+
         def set_progress(self, elapsed, duration):
+            old_filled = self._filled_cells()
+            old_has_duration = self.duration > 0
             self.elapsed = max(0.0, float(elapsed or 0))
             self.duration = max(0.0, float(duration or 0))
-            self.refresh()
+            # A long track often occupies the same terminal cell for several
+            # seconds. Avoid repainting an identical bar on every timer tick.
+            if (
+                self._filled_cells() != old_filled
+                or (self.duration > 0) != old_has_duration
+            ):
+                self.refresh()
 
         def render(self):
             width = max(1, self.size.width)
-            ratio = min(1.0, self.elapsed / self.duration) if self.duration else 0.0
-            filled = min(width, max(0, round(width * ratio)))
+            filled = self._filled_cells()
             bar = Text()
             bar.append("━" * filled, style="bold #111111")
             bar.append("─" * (width - filled), style="#c4c4c0")
@@ -9621,6 +9641,8 @@ if TEXTUAL_AVAILABLE:
             self._lyrics_enabled = False
             self._lyrics_width = None
             self._playlist_width = None
+            self._lyrics_render_state = None
+            self._playlist_sync_state = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="top"):
@@ -9952,6 +9974,7 @@ if TEXTUAL_AVAILABLE:
             if getattr(table, "_music_schema", None) == wanted:
                 return
             table.clear(columns=True)
+            table._music_row_signatures = {}
             if radio:
                 table.add_column("#", key="number", width=3)
                 table.add_column("Station", key="station", width=28)
@@ -9994,6 +10017,7 @@ if TEXTUAL_AVAILABLE:
         def _refresh_sort_headings(self):
             table = self.query_one("#table", DataTable)
             schema = getattr(table, "_music_schema", None)
+            changed = False
             if schema == "youtube":
                 for key, title in (
                     ("title", "Title"), ("channel", "Channel"),
@@ -10001,8 +10025,12 @@ if TEXTUAL_AVAILABLE:
                 ):
                     column = table.columns.get(key)
                     if column is not None:
-                        column.label = Text(self._youtube_sort_heading(title, key))
-                table.refresh()
+                        label = self._youtube_sort_heading(title, key)
+                        if str(column.label) != label:
+                            column.label = Text(label)
+                            changed = True
+                if changed:
+                    table.refresh()
                 return
             if schema != "library":
                 return
@@ -10012,8 +10040,12 @@ if TEXTUAL_AVAILABLE:
             ):
                 column = table.columns.get(key)
                 if column is not None:
-                    column.label = Text(self._sort_heading(title, key))
-            table.refresh()
+                    label = self._sort_heading(title, key)
+                    if str(column.label) != label:
+                        column.label = Text(label)
+                        changed = True
+            if changed:
+                table.refresh()
 
         def tick(self):
             if not self.player:
@@ -10021,13 +10053,13 @@ if TEXTUAL_AVAILABLE:
             self.player._process_pending()
             self.player._queue_apple_radio_poll()
             self.player._save_session_if_due()
-            self._sync_lyrics_panel()
             duration_updates = self.player._take_duration_ui_updates()
             if self.player.dirty:
                 self.refresh_ui(rebuild_table=True)
             else:
                 # Keep the clock isolated from the much more expensive table
                 # and layout refresh. This callback runs once per second.
+                self._sync_lyrics_panel()
                 self.refresh_transport()
                 self._refresh_duration_cells(duration_updates)
 
@@ -10062,7 +10094,20 @@ if TEXTUAL_AVAILABLE:
                 self._lyrics_requested_token = token
                 self._lyrics_scrolled_token = None
                 p.request_lyrics(name)
-            self.query_one("#lyrics-track", Static).update(Text(name or "No local song playing"))
+            render_state = (
+                name,
+                p.lyrics_source,
+                p.lyrics_source_url,
+                p.lyrics_text,
+                p.lyrics_status,
+                id(p.lyrics_italics),
+            )
+            if render_state == self._lyrics_render_state:
+                return
+            self._lyrics_render_state = render_state
+            self.query_one("#lyrics-track", Static).update(
+                Text(name or "No local song playing")
+            )
             source = Text()
             if p.lyrics_source:
                 source.append("Source: ")
@@ -10112,32 +10157,38 @@ if TEXTUAL_AVAILABLE:
             existing_names = {
                 str(row.key.value) for row in table.ordered_rows
             }
+            row_signatures = getattr(table, "_music_row_signatures", {})
             for name in names:
                 if name not in existing_names:
                     continue
                 duration_ms = p._duration_ms_cache.get(name, 0)
+                duration_text = (
+                    p._fmt_time(duration_ms) if duration_ms > 0 else "--:--"
+                )
+                listen_text = p._fmt_listen_hours(p._total_listen_hours(name))
                 table.update_cell(
                     name,
                     "duration",
-                    Text(
-                        p._fmt_time(duration_ms) if duration_ms > 0 else "--:--",
-                        justify="right",
-                    ),
+                    Text(duration_text, justify="right"),
                 )
                 table.update_cell(
                     name,
                     "listen",
-                    Text(
-                        p._fmt_listen_hours(p._total_listen_hours(name)),
-                        justify="right",
-                    ),
+                    Text(listen_text, justify="right"),
                 )
+                previous = row_signatures.get(name)
+                if previous is not None and len(previous) == 7:
+                    updated = list(previous)
+                    updated[3] = listen_text
+                    updated[5] = duration_text
+                    row_signatures[name] = tuple(updated)
 
         def refresh_playlists(self):
             if not self.player:
                 return
             box = self.query_one("#playlist-buttons", Vertical)
             box.remove_children()
+            self._playlist_sync_state = None
             self.playlist_generation += 1
             self.playlist_ids = {}
             active = self.player._current_tab_name()
@@ -10176,6 +10227,11 @@ if TEXTUAL_AVAILABLE:
                 return
             active = self.player._current_tab_name()
             source = self.player.play_tab
+            marker_visible = self.player.current in self.player._all_songs_set
+            state = (active, source, marker_visible, tuple(self.playlist_ids.items()))
+            if state == self._playlist_sync_state:
+                return
+            self._playlist_sync_state = state
             for button_id, name in self.playlist_ids.items():
                 try:
                     button = self.query_one(f"#{button_id}", PlaylistButton)
@@ -10208,6 +10264,16 @@ if TEXTUAL_AVAILABLE:
                 else "Filter your library…"
             )
 
+        @staticmethod
+        def _update_if_changed(widget, value, signature=None):
+            """Update a Textual widget only when its displayed value changed."""
+            signature = value if signature is None else signature
+            if getattr(widget, "_music_content_signature", object()) == signature:
+                return False
+            widget._music_content_signature = signature
+            widget.update(value)
+            return True
+
         def refresh_transport(self):
             """Refresh only elapsed time and progress, once per UI tick."""
             p = self.player
@@ -10232,22 +10298,21 @@ if TEXTUAL_AVAILABLE:
                     details.append(speed)
                 if eta:
                     details.append(f"ETA {eta}")
-                self.query_one("#time-label", Static).update("  ".join(details))
-                self.query_one("#progress", DurationBar).set_progress(percent, 100)
+                time_text = "  ".join(details)
+                progress = (percent, 100)
             elif p.apple_radio_enabled:
-                self.query_one("#time-label", Static).update(
-                    "Playing through Apple Music"
-                    if p.apple_radio_active
+                time_text = (
+                    "Playing through Apple Music" if p.apple_radio_active
                     else "Select a station below"
                 )
-                self.query_one("#progress", DurationBar).set_progress(0, 0)
+                progress = (0, 0)
             else:
-                self.query_one("#time-label", Static).update(
-                    f"{p._fmt_time(elapsed)} / {p._fmt_time(duration)}"
-                )
-                self.query_one("#progress", DurationBar).set_progress(
-                    elapsed, duration
-                )
+                time_text = f"{p._fmt_time(elapsed)} / {p._fmt_time(duration)}"
+                progress = (elapsed, duration)
+            self._update_if_changed(
+                self.query_one("#time-label", Static), time_text
+            )
+            self.query_one("#progress", DurationBar).set_progress(*progress)
 
         def refresh_ui(self, rebuild_table=False, preserve_scroll=True):
             p = self.player
@@ -10284,9 +10349,12 @@ if TEXTUAL_AVAILABLE:
                 now_content = Text.assemble(
                     ("NOW PLAYING  ▸  ", "bold"), p.current
                 )
-            self.query_one("#now", Static).update(now_content)
-            self.query_one("#stats", Static).update(
-                p._library_stats_label()
+            self._update_if_changed(
+                self.query_one("#now", Static), now_content, str(now_content)
+            )
+            stats_text = p._library_stats_label()
+            self._update_if_changed(
+                self.query_one("#stats", Static), stats_text
             )
             transport_visible = (
                 not p.apple_radio_enabled
@@ -10300,8 +10368,11 @@ if TEXTUAL_AVAILABLE:
                 play_button.refresh(layout=True)
             self._fit_button_to_label(play_button)
             level = min(10, max(0, round(p.vol * 10)))
-            self.query_one("#volume-label", Static).update(
+            volume_text = (
                 f"{'█' * level}{'·' * (10 - level)}  {round(p.vol * 100):>3}%"
+            )
+            self._update_if_changed(
+                self.query_one("#volume-label", Static), volume_text
             )
             mode_button = self.query_one("#mode", Button)
             mode_label = "Download" if p.youtube_preview_enabled else f"Mode: {p.play_mode}"
@@ -10311,10 +10382,14 @@ if TEXTUAL_AVAILABLE:
                 mode_button.refresh(layout=True)
             self._fit_button_to_label(mode_button)
             safety_button = self.query_one("#non-speaker-toggle", Button)
-            safety_button.label = "Yes" if p.non_speaker_mode else "No"
+            safety_label = "Yes" if p.non_speaker_mode else "No"
+            if str(safety_button.label) != safety_label:
+                safety_button.label = safety_label
             self._fit_button_to_label(safety_button)
             tags_button = self.query_one("#show-tags-toggle", Button)
-            tags_button.label = "Yes" if p.show_tags else "No"
+            tags_label = "Yes" if p.show_tags else "No"
+            if str(tags_button.label) != tags_label:
+                tags_button.label = tags_label
             self._fit_button_to_label(tags_button)
             for selector in (
                 "#vol-down", "#vol-up", "#youtube-back", "#youtube-stop",
@@ -10324,7 +10399,8 @@ if TEXTUAL_AVAILABLE:
             workspace = self.query_one("#workspace", Horizontal)
             workspace.set_class(p.youtube_preview_enabled, "youtube")
             radio_button = self.query_one("#apple-radio", Button)
-            radio_button.label = "Apple Radio"
+            if str(radio_button.label) != "Apple Radio":
+                radio_button.label = "Apple Radio"
             radio_button.display = (
                 sys.platform == "darwin"
                 and self.editor_mode == "search"
@@ -10336,7 +10412,7 @@ if TEXTUAL_AVAILABLE:
             query.display = True
             editor_label.styles.width = 7
             if self.editor_mode == "search":
-                editor_label.update("Search")
+                self._update_if_changed(editor_label, "Search")
             self.query_one("#yt-preview", Button).display = (
                 self.editor_mode == "search" and not p.youtube_preview_enabled
             )
@@ -10388,6 +10464,8 @@ if TEXTUAL_AVAILABLE:
                     update_in_place = existing_keys == expected_keys
                     if not update_in_place:
                         table.clear()
+                        table._music_row_signatures = {}
+                    row_signatures = getattr(table, "_music_row_signatures", {})
                     for index, result in enumerate(p.youtube_results, 1):
                         is_channel = p._is_youtube_channel_result(result)
                         title = str(result.get("title") or "Untitled")
@@ -10401,22 +10479,46 @@ if TEXTUAL_AVAILABLE:
                             table.columns.get("channel").width,
                         )
                         style = "bold" if is_channel else ""
+                        view_text = (
+                            "channel" if is_channel
+                            else p._fmt_yt_count(result.get("views"))
+                        )
+                        like_text = (
+                            "open" if is_channel
+                            else p._fmt_yt_count(result.get("likes"))
+                        )
+                        signature = (
+                            str(index), title, channel, view_text, like_text, style
+                        )
+                        row_key = f"youtube-{index - 1}"
+                        previous = row_signatures.get(row_key)
+                        if update_in_place and previous == signature:
+                            continue
                         values = (
                             Text(str(index), style=style, justify="left"),
                             Text(title, style=style),
                             Text(channel, style=style),
-                            Text("channel" if is_channel else p._fmt_yt_count(result.get("views")), style=style, justify="right"),
-                            Text("open" if is_channel else p._fmt_yt_count(result.get("likes")), style=style, justify="right"),
+                            Text(view_text, style=style, justify="right"),
+                            Text(like_text, style=style, justify="right"),
                         )
-                        row_key = f"youtube-{index - 1}"
                         if update_in_place:
-                            for column, value in zip(
+                            style_changed = (
+                                previous is not None and previous[5] != style
+                            )
+                            for value_index, (column, value) in enumerate(zip(
                                 ("number", "title", "channel", "views", "likes"),
                                 values,
-                            ):
-                                table.update_cell(row_key, column, value)
+                            )):
+                                if (
+                                    previous is None
+                                    or style_changed
+                                    or previous[value_index] != signature[value_index]
+                                ):
+                                    table.update_cell(row_key, column, value)
                         else:
                             table.add_row(*values, key=row_key)
+                        row_signatures[row_key] = signature
+                    table._music_row_signatures = row_signatures
                     p.dirty = False
                     if not preserve_scroll:
                         table.scroll_to(y=0, animate=False, force=True)
@@ -10431,35 +10533,53 @@ if TEXTUAL_AVAILABLE:
                 update_in_place = existing_names == list(p.songs)
                 if not update_in_place:
                     table.clear()
+                    table._music_row_signatures = {}
+                row_signatures = getattr(table, "_music_row_signatures", {})
                 active_row_key = p.current if p.current in p.songs else None
                 table.set_music_highlighted_row_key(active_row_key)
                 for index, name in enumerate(p.songs, 1):
                     duration_ms = p._cached_duration_ms(name)
+                    plain_values = (
+                        "●" if name in p.selected_songs else "○",
+                        str(index),
+                        p._truncate_song_name(
+                            name if p.show_tags else p._without_artist_tag(name),
+                            table.columns.get("name").width,
+                        ),
+                        p._fmt_listen_hours(p._total_listen_hours(name)),
+                        str(p._plays(name)),
+                        p._fmt_time(duration_ms) if duration_ms > 0 else "--:--",
+                        p._fmt_since_last_play(name),
+                    )
+                    previous = row_signatures.get(name)
+                    if update_in_place and previous == plain_values:
+                        continue
                     def cell(value, justify="left"):
                         return Text(str(value), justify=justify)
                     values = (
-                        cell("●" if name in p.selected_songs else "○"),
-                        cell(index, "left"),
-                        cell(p._truncate_song_name(
-                            name if p.show_tags else p._without_artist_tag(name),
-                            table.columns.get("name").width,
-                        )),
-                        cell(p._fmt_listen_hours(p._total_listen_hours(name)), "right"),
-                        cell(p._plays(name), "right"),
-                        cell(p._fmt_time(duration_ms) if duration_ms > 0 else "--:--", "right"),
-                        cell(p._fmt_since_last_play(name), "right"),
+                        cell(plain_values[0]),
+                        cell(plain_values[1], "left"),
+                        cell(plain_values[2]),
+                        cell(plain_values[3], "right"),
+                        cell(plain_values[4], "right"),
+                        cell(plain_values[5], "right"),
+                        cell(plain_values[6], "right"),
                     )
                     if update_in_place:
-                        for column, value in zip(
+                        for value_index, (column, value) in enumerate(zip(
                             ("select", "number", "name", "listen", "plays", "duration", "last"),
                             values,
-                        ):
-                            table.update_cell(name, column, value)
+                        )):
+                            if previous is None or previous[value_index] != plain_values[value_index]:
+                                table.update_cell(name, column, value)
                     else:
                         table.add_row(*values, key=name)
-                self.call_after_refresh(
-                    lambda: table.scroll_to(y=old_scroll_y, animate=False, force=True)
-                )
+                    row_signatures[name] = plain_values
+                table._music_row_signatures = row_signatures
+                if not update_in_place:
+                    self.call_after_refresh(
+                        lambda: table.scroll_to(y=old_scroll_y, animate=False, force=True)
+                    )
                 if schema_changed:
                     self.call_after_refresh(self._settle_table_after_schema_change)
                 p.dirty = False
