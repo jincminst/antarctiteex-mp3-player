@@ -1730,8 +1730,50 @@ class Player:
         except Exception:
             return default
 
+    def _merge_legacy_song_history(self, current, legacy):
+        """Merge an old metadata file without rolling newer counters back."""
+        merged = dict(current)
+        for name, legacy_entry in legacy.items():
+            if name not in merged:
+                merged[name] = legacy_entry
+                continue
+
+            current_count = self._extract_count(merged[name])
+            legacy_count = self._extract_count(legacy_entry)
+            if legacy_count <= current_count:
+                continue
+
+            current_entry = merged[name]
+            if isinstance(current_entry, dict):
+                current_entry = dict(current_entry)
+            else:
+                current_entry = {"play_count": current_count}
+            current_entry["play_count"] = legacy_count
+            current_entry.pop("plays", None)
+            current_entry.pop("count", None)
+            if isinstance(legacy_entry, dict):
+                current_last = self._last_played_value(current_entry)
+                legacy_last = self._last_played_value(legacy_entry)
+                if legacy_last > current_last:
+                    current_entry["last_played_at"] = legacy_last
+            merged[name] = current_entry
+        return merged
+
+    @staticmethod
+    def _last_played_value(entry):
+        if not isinstance(entry, dict):
+            return 0
+        values = []
+        for key in ("last_played_at", "last_play_count_at"):
+            try:
+                values.append(max(0, int(entry.get(key, 0) or 0)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return max(values, default=0)
+
     def _load_cache(self):
         path = self._cache_path()
+        cache = self._empty_cache()
         if os.path.exists(path):
             data = self._read_json(path, {})
             if isinstance(data, dict) and any(
@@ -1747,19 +1789,15 @@ class Player:
                 ):
                     value = data.get(key, {})
                     cache[key] = value if isinstance(value, dict) else {}
-                return cache
 
             # Accept a bare legacy object at the new path. This also keeps old
             # callers that imported META_FILE or PLAYLISTS_FILE working.
-            if isinstance(data, dict):
-                cache = self._empty_cache()
+            elif isinstance(data, dict):
                 if data and all(isinstance(value, list) for value in data.values()):
                     cache["playlists"] = data
                 else:
                     cache["songs"] = data
-                return cache
 
-        cache = self._empty_cache()
         legacy = {
             "songs": LEGACY_META_FILE,
             "playlists": LEGACY_PLAYLISTS_FILE,
@@ -1773,7 +1811,12 @@ class Player:
             found_legacy = True
             value = self._read_json(legacy_path, {})
             if isinstance(value, dict):
-                cache[key] = value
+                if key == "songs":
+                    cache[key] = self._merge_legacy_song_history(cache[key], value)
+                else:
+                    # The unified cache is newer. Keep its values while still
+                    # rescuing keys that exist only in a leftover legacy file.
+                    cache[key] = {**value, **cache[key]}
 
         if found_legacy and self._write_cache(cache):
             for filename in legacy.values():

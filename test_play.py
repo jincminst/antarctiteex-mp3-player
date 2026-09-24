@@ -1187,6 +1187,36 @@ class PureHelperTests(unittest.TestCase):
             self.assertFalse(Path(folder, play.LEGACY_PLAYLISTS_FILE).exists())
             self.assertFalse(Path(folder, play.LEGACY_ANALYSIS_FILE).exists())
 
+    def test_leftover_legacy_metadata_repairs_missing_play_history(self):
+        player = bare_player()
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, play.CACHE_FILE).write_text(json.dumps({
+                "version": play.CACHE_VERSION,
+                "songs": {
+                    "Despacito": {"duration_ms": 228345},
+                    "Newer": {"plays": 12},
+                },
+                "playlists": {},
+                "playlist_tags": {},
+                "analysis": {},
+                "settings": {},
+            }))
+            Path(folder, play.LEGACY_META_FILE).write_text(json.dumps({
+                "Despacito": {"plays": 305, "last_played_at": 1234},
+                "Newer": {"plays": 4},
+                "Deleted song": {"plays": 9},
+            }))
+
+            cache = player._load_cache()
+
+            self.assertEqual(cache["songs"]["Despacito"]["play_count"], 305)
+            self.assertEqual(cache["songs"]["Despacito"]["duration_ms"], 228345)
+            self.assertEqual(cache["songs"]["Despacito"]["last_played_at"], 1234)
+            self.assertEqual(cache["songs"]["Newer"]["plays"], 12)
+            self.assertEqual(cache["songs"]["Deleted song"]["plays"], 9)
+            self.assertFalse(Path(folder, play.LEGACY_META_FILE).exists())
+
     def test_malformed_meta_shape_and_counts_are_safe(self):
         player = bare_player()
         with tempfile.TemporaryDirectory() as folder:
