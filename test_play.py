@@ -1511,15 +1511,16 @@ class LyricsTests(unittest.TestCase):
                       if span.start <= position < span.end]
             return colors[-1] if colors else None
 
-        self.assertIsNone(color_at("Mira Vale"))
-        self.assertIsNone(color_at("First line"))
-        self.assertEqual(color_at("Rowan Frost"), color_at("Second line"))
-        self.assertIsNotNone(color_at("Rowan Frost"))
-        self.assertIsNone(color_at("First again"))
+        group_color = color_at("Mira Vale")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color_at("Rowan Frost"), group_color)
+        self.assertEqual(color_at("First line"), group_color)
+        self.assertEqual(color_at("Second line"), group_color)
+        self.assertEqual(color_at("First again"), group_color)
         self.assertIsNone(color_at("Solo line"))
-        self.assertIsNone(color_at(" in a normal line"))
+        self.assertEqual(color_at(" in a normal line"), group_color)
 
-    def test_italicized_credit_overrides_duet_order(self):
+    def test_italics_do_not_split_joint_credit(self):
         parser = play._GeniusLyricsParser()
         parser.feed(
             '<div data-lyrics-container="true">'
@@ -1535,10 +1536,11 @@ class LyricsTests(unittest.TestCase):
             position = rendered.plain.index(fragment)
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
-        self.assertIsNone(color("Alex River"))
-        self.assertIsNone(color("Alex line"))
-        self.assertEqual(color("Casey Lane"), color("Casey line"))
-        self.assertIsNotNone(color("Casey Lane"))
+        group_color = color("Alex River")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color("Casey Lane"), group_color)
+        self.assertEqual(color("Alex line"), group_color)
+        self.assertEqual(color("Casey line"), group_color)
 
     def test_lead_stays_plain_and_unmarked_duet_colors_shared_lines(self):
         lyrics = (
@@ -1558,7 +1560,7 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color("Main chorus"))
         self.assertIsNotNone(color("Mira Vale"))
         self.assertEqual(color("Together here"), color("Together again"))
-        self.assertNotEqual(color("Together here"), color("Mira Vale"))
+        self.assertEqual(color("Together here"), color("Mira Vale"))
 
     def test_unmarked_three_singer_section_uses_group_accent(self):
         lyrics = (
@@ -1573,9 +1575,10 @@ class LyricsTests(unittest.TestCase):
                          if span.start <= position < span.end), None)
 
         self.assertIsNone(color("Lead solo"))
-        self.assertIsNotNone(color("Together now"))
-        self.assertIsNotNone(color("Khalid"))
-        self.assertIsNotNone(color("Guest Singer"))
+        group_color = color("Together now")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color("Khalid"), group_color)
+        self.assertEqual(color("Guest Singer"), group_color)
 
     def test_joint_credit_colors_billie_separator_khalid_and_the_shared_line(self):
         lyrics = (
@@ -1593,12 +1596,11 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(color_at(lyrics.index("Billie solo")))
         shared_color = color_at(lyrics.index("We sing together"))
         self.assertIsNotNone(shared_color)
-        self.assertIsNone(color_at(lyrics.index("Billie Eilish", chorus)))
+        self.assertEqual(color_at(lyrics.index("Billie Eilish", chorus)), shared_color)
         self.assertEqual(color_at(lyrics.index("&", chorus)), shared_color)
-        self.assertIsNotNone(color_at(lyrics.index("Khalid", chorus)))
-        self.assertNotEqual(color_at(lyrics.index("Khalid", chorus)), shared_color)
+        self.assertEqual(color_at(lyrics.index("Khalid", chorus)), shared_color)
 
-    def test_credited_duet_does_not_color_unmarked_lead_lines_when_parts_marked(self):
+    def test_marked_duet_stays_one_group_identity(self):
         lyrics = (
             "[Verse: Billie Eilish]\nLead solo\n"
             "[Chorus: Khalid & Billie Eilish]\nLead line\nKhalid line"
@@ -1611,16 +1613,19 @@ class LyricsTests(unittest.TestCase):
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
 
-        self.assertIsNone(color("Lead line"))
-        self.assertEqual(color("Khalid"), color("Khalid line"))
+        group_color = color("Khalid")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color("Lead line"), group_color)
+        self.assertEqual(color("Khalid line"), group_color)
         chorus = lyrics.index("[Chorus:")
-        self.assertIsNotNone(color("Khalid & Billie Eilish"))
-        self.assertIsNotNone(next((span.style for span in rendered.spans
-                                   if span.start <= lyrics.index("&", chorus) < span.end), None))
-        self.assertIsNone(next((span.style for span in rendered.spans
-                               if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None))
+        self.assertEqual(next((span.style for span in rendered.spans
+                              if span.start <= lyrics.index("&", chorus) < span.end), None),
+                         group_color)
+        self.assertEqual(next((span.style for span in rendered.spans
+                              if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None),
+                         group_color)
 
-    def test_italic_duet_only_colors_the_added_singer(self):
+    def test_italic_duet_colors_whole_group(self):
         lyrics = (
             "[Verse: Casey Lane]\nLead line one\nLead line two\n"
             "[Bridge: Casey Lane & Mira Vale]\nLead bridge line\nGuest bridge line"
@@ -1633,11 +1638,12 @@ class LyricsTests(unittest.TestCase):
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
 
-        self.assertIsNone(color("Lead bridge line"))
-        self.assertIsNotNone(color("Guest bridge line"))
-        self.assertEqual(color("Mira Vale"), color("Guest bridge line"))
+        group_color = color("Mira Vale")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color("Lead bridge line"), group_color)
+        self.assertEqual(color("Guest bridge line"), group_color)
 
-    def test_shared_bridge_colors_only_guest_span_even_when_guest_is_first(self):
+    def test_guest_first_bridge_stays_one_group_identity(self):
         lyrics = (
             "[Verse: Casey Lane]\nLead verse one\nLead verse two\n"
             "[Bridge: Mira Vale & Casey Lane]\nLead words, guest words"
@@ -1651,11 +1657,12 @@ class LyricsTests(unittest.TestCase):
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
 
-        self.assertIsNone(color("Lead words"))
-        self.assertIsNotNone(color("guest words"))
-        self.assertEqual(color("Mira Vale"), color("guest words"))
+        group_color = color("Mira Vale")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(color("Lead words"), group_color)
+        self.assertEqual(color("guest words"), group_color)
 
-    def test_italicized_lead_credit_colors_only_guest_part_of_shared_line(self):
+    def test_italicized_lead_credit_stays_one_group_identity(self):
         parser = play._GeniusLyricsParser()
         parser.feed(
             '<div data-lyrics-container="true">'
@@ -1674,10 +1681,45 @@ class LyricsTests(unittest.TestCase):
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
 
-        self.assertIsNotNone(color("Mira Vale"))
-        self.assertEqual(color("Mira Vale"), color("Guest opening"))
-        self.assertIsNone(color("lead ending"))
+        group_color = color("Mira Vale")
+        self.assertIsNotNone(group_color)
+        self.assertEqual(group_color, color("Guest opening"))
+        self.assertEqual(group_color, color("lead ending"))
         self.assertIsNone(color("Casey Lane"))
+
+    def test_exact_joint_credit_is_one_identity_distinct_from_each_solo(self):
+        lyrics = (
+            "[Verse: Artist 1]\nArtist one solo\nArtist one again\n"
+            "[Verse: Artist 2]\nArtist two solo\n"
+            "[Chorus: Artist 1 & Artist 2]\nTwo together\n"
+            "[Bridge: Artist 2 & Artist 1]\nSame two reversed\n"
+            "[Outro: Artist 1 & Artist 2 & Artist 3]\nThree together"
+        )
+        rendered = play._render_singer_lyrics(lyrics, [])
+
+        def color_at(fragment, start=0):
+            position = lyrics.index(fragment, start)
+            return next((span.style for span in rendered.spans
+                         if span.start <= position < span.end), None)
+
+        self.assertIsNone(color_at("Artist one solo"))
+        solo_two = color_at("Artist two solo")
+        duo_start = lyrics.index("[Chorus:")
+        duo = color_at("Artist 1", duo_start)
+        self.assertIsNotNone(duo)
+        self.assertNotEqual(duo, solo_two)
+        self.assertEqual(color_at("&", duo_start), duo)
+        self.assertEqual(color_at("Artist 2", duo_start), duo)
+        self.assertEqual(color_at("Two together"), duo)
+        self.assertEqual(color_at("Same two reversed"), duo)
+        trio_start = lyrics.index("[Outro:")
+        trio = color_at("Artist 1", trio_start)
+        self.assertIsNotNone(trio)
+        self.assertNotEqual(trio, duo)
+        self.assertNotEqual(trio, solo_two)
+        self.assertEqual(color_at("Artist 2", trio_start), trio)
+        self.assertEqual(color_at("Artist 3", trio_start), trio)
+        self.assertEqual(color_at("Three together"), trio)
 
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)

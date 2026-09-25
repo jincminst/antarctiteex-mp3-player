@@ -1,4 +1,5 @@
 import argparse
+import colorsys
 import ctypes
 import difflib
 import html.parser
@@ -188,7 +189,6 @@ LYRICS_CACHE_VERSION = 4
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
 _SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
-_SHARED_SINGER_COLOR = "#c6a4ff"
 
 
 class _AudioObjectPropertyAddress(ctypes.Structure):
@@ -358,8 +358,20 @@ def _remap_lyric_italics(original, censored, italics):
     return remapped
 
 
+def _singer_identity_color(index):
+    """Return a distinct readable color for every credited identity."""
+    if index < len(_SINGER_COLORS):
+        return _SINGER_COLORS[index]
+    hue = (index * 0.618033988749895) % 1.0
+    red, green, blue = colorsys.hls_to_rgb(hue, 0.62, 0.62)
+    return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
+
+
 def _render_singer_lyrics(lyrics, italics):
-    """Color guest parts and joint credits while leaving lead solos plain."""
+    """Color each exact solo or joint credit as one singer identity."""
+    # Keep the argument for existing cached Genius payloads. Italic spans no
+    # longer subdivide a joint credit because the full group is one identity.
+    _ = italics
     rendered = Text(lyrics)
     lines = lyrics.split("\n")
     heading = re.compile(
@@ -368,11 +380,10 @@ def _render_singer_lyrics(lyrics, italics):
     )
     sections = []
     first_seen = {}
-    solo_lines = {}
     credited_lines = {}
 
-    # Count solo lines first: a name merely appearing in several duet credits
-    # should not outweigh the singer who carries the song's solo sections.
+    # A joint credit is deliberately one identity. Sorting its members makes
+    # "A & B" and "B & A" the same group without merging either into A or B.
     for index, line in enumerate(lines):
         match = heading.match(line)
         if not match:
@@ -388,22 +399,24 @@ def _render_singer_lyrics(lyrics, italics):
         while end < len(lines) and not (lines[end].startswith("[") and lines[end].endswith("]")):
             end += 1
         count = sum(bool(body.strip()) for body in lines[index + 1:end])
-        sections.append((index, end, match.start(1), names))
-        for name in names:
-            key = name.casefold()
-            first_seen.setdefault(key, len(first_seen))
-            credited_lines[key] = credited_lines.get(key, 0) + count
-            if len(names) == 1:
-                solo_lines[key] = solo_lines.get(key, 0) + count
+        members = tuple(sorted({name.casefold() for name in names}))
+        identity = (("solo", members[0]) if len(names) == 1
+                    else ("group", members))
+        sections.append((index, end, match.start(1), match.end(1), identity))
+        first_seen.setdefault(identity, len(first_seen))
+        credited_lines[identity] = credited_lines.get(identity, 0) + count
 
     if not first_seen:
         return rendered
-    lead = max(first_seen, key=lambda key: (
-        solo_lines.get(key, 0), credited_lines.get(key, 0), -first_seen[key]
-    ))
+    solo_identities = [identity for identity in first_seen if identity[0] == "solo"]
+    lead = max(solo_identities, key=lambda identity: (
+        credited_lines.get(identity, 0), -first_seen[identity]
+    )) if solo_identities else None
     colors = {
-        key: _SINGER_COLORS[index % len(_SINGER_COLORS)]
-        for index, key in enumerate(key for key in first_seen if key != lead)
+        identity: _singer_identity_color(index)
+        for index, identity in enumerate(
+            identity for identity in first_seen if identity != lead
+        )
     }
     offsets = []
     offset = 0
@@ -411,103 +424,22 @@ def _render_singer_lyrics(lyrics, italics):
         offsets.append(offset)
         offset += len(line) + 1
 
-    for index, end, name_start, names in sections:
-        header_spans = italics[index] if index < len(italics) else []
-        has_marked_parts = any(
-            line_index < len(italics) and italics[line_index]
-            for line_index in range(index + 1, end)
-        )
-        joint_credit = len(names) > 1
-        shared_section = joint_credit and not has_marked_parts
-        italic_singer = None
-        cursor = name_start
-        credit_end = len(lines[index]) - 1
-        for name in names:
-            start = lines[index].find(name, cursor)
-            if start < 0:
-                continue
-            finish = start + len(name)
-            key = name.casefold()
-            if joint_credit and cursor < start:
-                rendered.stylize(
-                    _SHARED_SINGER_COLOR,
-                    offsets[index] + cursor, offsets[index] + start,
-                )
-            # The lead singer is the meaning of the normal text color. Keep
-            # their name plain even in a joint credit so the heading remains
-            # a reliable key for the uncolored lead lines below it.
-            credit_color = colors.get(key)
-            if credit_color:
-                rendered.stylize(
-                    credit_color, offsets[index] + start, offsets[index] + finish,
-                )
-            if any(start < span_end and finish > span_start
-                   for span_start, span_end in header_spans):
-                italic_singer = key
-            cursor = finish
-        if joint_credit and cursor < credit_end:
+    for index, end, credit_start, credit_end, identity in sections:
+        color = colors.get(identity)
+        if color:
+            # Paint the entire exact credit, including every separator, as one
+            # unit. Genius italics no longer split a group into partial names.
             rendered.stylize(
-                _SHARED_SINGER_COLOR,
-                offsets[index] + cursor, offsets[index] + credit_end,
-            )
-
-        if len(names) == 2 and italic_singer is None:
-            italic_singer = next(
-                (name.casefold() for name in names if name.casefold() != lead),
-                names[-1].casefold(),
+                color,
+                offsets[index] + credit_start,
+                offsets[index] + credit_end,
             )
         for line_index in range(index + 1, end):
             line = lines[line_index]
-            if not line.strip():
-                continue
-            if len(names) == 1:
-                singer = names[0].casefold()
-                if singer in colors:
-                    rendered.stylize(
-                        colors[singer], offsets[line_index], offsets[line_index] + len(line)
-                    )
-            elif shared_section:
-                # Without per-line attribution, a heading crediting multiple
-                # singers means they share the section.
+            if color and line.strip():
                 rendered.stylize(
-                    _SHARED_SINGER_COLOR,
-                    offsets[line_index], offsets[line_index] + len(line),
+                    color, offsets[line_index], offsets[line_index] + len(line)
                 )
-            elif len(names) == 2 and italic_singer in colors:
-                # A shared line can contain both voices. Only the source's
-                # italicized characters are attributed to the added singer.
-                spans = italics[line_index] if line_index < len(italics) else []
-                for start, finish in spans:
-                    start = max(0, min(len(line), start))
-                    finish = max(start, min(len(line), finish))
-                    if start < finish:
-                        rendered.stylize(
-                            colors[italic_singer],
-                            offsets[line_index] + start,
-                            offsets[line_index] + finish,
-                        )
-            elif len(names) == 2 and italic_singer == lead:
-                # An explicitly italicized lead credit makes the unitalicized
-                # parts the other singer's parts.
-                guest = next((name.casefold() for name in names
-                              if name.casefold() != lead), None)
-                if guest in colors:
-                    spans = italics[line_index] if line_index < len(italics) else []
-                    cursor = 0
-                    for start, finish in spans:
-                        start = max(0, min(len(line), start))
-                        finish = max(start, min(len(line), finish))
-                        if cursor < start:
-                            rendered.stylize(
-                                colors[guest], offsets[line_index] + cursor,
-                                offsets[line_index] + start,
-                            )
-                        cursor = max(cursor, finish)
-                    if cursor < len(line):
-                        rendered.stylize(
-                            colors[guest], offsets[line_index] + cursor,
-                            offsets[line_index] + len(line),
-                        )
     return rendered
 
 
