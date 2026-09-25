@@ -380,7 +380,7 @@ def _render_singer_lyrics(lyrics, italics):
     )
     sections = []
     first_seen = {}
-    credited_lines = {}
+    section_counts = {}
 
     # A joint credit is deliberately one identity. Sorting its members makes
     # "A & B" and "B & A" the same group without merging either into A or B.
@@ -398,20 +398,21 @@ def _render_singer_lyrics(lyrics, italics):
         end = index + 1
         while end < len(lines) and not (lines[end].startswith("[") and lines[end].endswith("]")):
             end += 1
-        count = sum(bool(body.strip()) for body in lines[index + 1:end])
         members = tuple(sorted({name.casefold() for name in names}))
         identity = (("solo", members[0]) if len(names) == 1
                     else ("group", members))
         sections.append((index, end, match.start(1), match.end(1), identity))
         first_seen.setdefault(identity, len(first_seen))
-        credited_lines[identity] = credited_lines.get(identity, 0) + count
+        section_counts[identity] = section_counts.get(identity, 0) + 1
 
     if not first_seen:
         return rendered
-    solo_identities = [identity for identity in first_seen if identity[0] == "solo"]
-    lead = max(solo_identities, key=lambda identity: (
-        credited_lines.get(identity, 0), -first_seen[identity]
-    )) if solo_identities else None
+    # The exact credit used by the most section headings is the dominant
+    # identity and remains black. A group can therefore be dominant without
+    # being merged into any of its individual singers.
+    lead = max(first_seen, key=lambda identity: (
+        section_counts.get(identity, 0), -first_seen[identity]
+    ))
     colors = {
         identity: _singer_identity_color(index)
         for index, identity in enumerate(

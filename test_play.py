@@ -1488,7 +1488,7 @@ class PureHelperTests(unittest.TestCase):
 
 
 class LyricsTests(unittest.TestCase):
-    def test_genius_italics_color_singers_from_section_credits(self):
+    def test_first_identity_wins_a_section_count_tie(self):
         parser = play._GeniusLyricsParser()
         parser.feed(
             '<div data-lyrics-container="true">'
@@ -1511,14 +1511,13 @@ class LyricsTests(unittest.TestCase):
                       if span.start <= position < span.end]
             return colors[-1] if colors else None
 
-        group_color = color_at("Mira Vale")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color_at("Rowan Frost"), group_color)
-        self.assertEqual(color_at("First line"), group_color)
-        self.assertEqual(color_at("Second line"), group_color)
-        self.assertEqual(color_at("First again"), group_color)
-        self.assertIsNone(color_at("Solo line"))
-        self.assertEqual(color_at(" in a normal line"), group_color)
+        self.assertIsNone(color_at("Mira Vale"))
+        self.assertIsNone(color_at("Rowan Frost"))
+        self.assertIsNone(color_at("First line"))
+        self.assertIsNone(color_at("Second line"))
+        self.assertIsNone(color_at("First again"))
+        self.assertIsNone(color_at(" in a normal line"))
+        self.assertIsNotNone(color_at("Solo line"))
 
     def test_italics_do_not_split_joint_credit(self):
         parser = play._GeniusLyricsParser()
@@ -1536,11 +1535,10 @@ class LyricsTests(unittest.TestCase):
             position = rendered.plain.index(fragment)
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
-        group_color = color("Alex River")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color("Casey Lane"), group_color)
-        self.assertEqual(color("Alex line"), group_color)
-        self.assertEqual(color("Casey line"), group_color)
+        self.assertIsNone(color("Alex River"))
+        self.assertIsNone(color("Casey Lane"))
+        self.assertIsNone(color("Alex line"))
+        self.assertIsNone(color("Casey line"))
 
     def test_lead_stays_plain_and_unmarked_duet_colors_shared_lines(self):
         lyrics = (
@@ -1702,12 +1700,14 @@ class LyricsTests(unittest.TestCase):
             return next((span.style for span in rendered.spans
                          if span.start <= position < span.end), None)
 
-        self.assertIsNone(color_at("Artist one solo"))
+        solo_one = color_at("Artist one solo")
         solo_two = color_at("Artist two solo")
         duo_start = lyrics.index("[Chorus:")
         duo = color_at("Artist 1", duo_start)
-        self.assertIsNotNone(duo)
-        self.assertNotEqual(duo, solo_two)
+        self.assertIsNotNone(solo_one)
+        self.assertIsNotNone(solo_two)
+        self.assertNotEqual(solo_one, solo_two)
+        self.assertIsNone(duo)
         self.assertEqual(color_at("&", duo_start), duo)
         self.assertEqual(color_at("Artist 2", duo_start), duo)
         self.assertEqual(color_at("Two together"), duo)
@@ -1716,6 +1716,7 @@ class LyricsTests(unittest.TestCase):
         trio = color_at("Artist 1", trio_start)
         self.assertIsNotNone(trio)
         self.assertNotEqual(trio, duo)
+        self.assertNotEqual(trio, solo_one)
         self.assertNotEqual(trio, solo_two)
         self.assertEqual(color_at("Artist 2", trio_start), trio)
         self.assertEqual(color_at("Artist 3", trio_start), trio)
