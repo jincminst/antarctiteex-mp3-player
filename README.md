@@ -147,22 +147,6 @@ automatically uses an installed Deno, Node, QuickJS (`qjs`), or Bun executable
 and passes its absolute path to yt-dlp. The package installs yt-dlp's matching
 EJS scripts through the `yt-dlp[default]` dependency group.
 
-## Apple Music Song Alert
-
-On macOS, the included `apple-music-alert` command can watch Music for an exact
-song title and send a notification when that song starts playing:
-
-```sh
-apple-music-alert "Song Name"
-apple-music-alert "Song Name" --artist "Artist Name"
-```
-
-Running `apple-music-alert` without a title prompts for one. Matching ignores
-capitalization and repeated spaces. The optional artist prevents another song
-with the same title from triggering the alert. Leave the command running and
-press Ctrl-C to stop it. The first run may cause macOS to ask for permission to
-control Music and send notifications.
-
 ## Development
 
 Run the test suite with:
