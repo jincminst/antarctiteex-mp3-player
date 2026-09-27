@@ -206,8 +206,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--interval",
         type=float,
-        default=1.0,
-        help="seconds between checks (default: 1)",
+        default=150.0,
+        help="seconds between checks (default: 150, or 2.5 minutes)",
     )
     return parser
 
