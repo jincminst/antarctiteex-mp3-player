@@ -1308,6 +1308,12 @@ class PureHelperTests(unittest.TestCase):
         player = bare_player()
         self.assertIn("search_query=a+%26+b", player._youtube_search_url("a & b"))
         self.assertEqual(
+            player._youtube_video_id_from_query(" dQw4w9WgXcQ "),
+            "dQw4w9WgXcQ",
+        )
+        self.assertEqual(player._youtube_video_id_from_query("short"), "")
+        self.assertEqual(player._youtube_video_id_from_query("eleven chars"), "")
+        self.assertEqual(
             player._youtube_video_id_from_url("https://youtu.be/dQw4w9WgXcQ"),
             "dQw4w9WgXcQ",
         )
@@ -1316,6 +1322,26 @@ class PureHelperTests(unittest.TestCase):
             player._youtube_channel_videos_target("https://youtube.com/@music"),
             "https://youtube.com/@music/videos",
         )
+
+    def test_bare_youtube_id_targets_only_that_video(self):
+        player = bare_player()
+        args, direct = player._youtube_search_video_args("dQw4w9WgXcQ", 25)
+
+        self.assertTrue(direct)
+        self.assertEqual(args[-1], "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        self.assertNotIn("--flat-playlist", args)
+        self.assertEqual(
+            player._youtube_cache_key(query="dQw4w9WgXcQ"),
+            "video:dQw4w9WgXcQ",
+        )
+
+    def test_normal_youtube_text_keeps_multi_result_search(self):
+        player = bare_player()
+        args, direct = player._youtube_search_video_args("music video", 25)
+
+        self.assertFalse(direct)
+        self.assertEqual(args[-1], "ytsearch25:music video")
+        self.assertIn("--flat-playlist", args)
 
     def test_youtube_result_extraction_deduplicates_and_skips_invalid_rows(self):
         player = bare_player()

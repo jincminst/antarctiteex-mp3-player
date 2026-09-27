@@ -4487,6 +4487,9 @@ class Player:
     def _youtube_cache_key(self, query=None, channel_url=None):
         if channel_url:
             return f"channel:{channel_url}"
+        video_id = self._youtube_video_id_from_query(query)
+        if video_id:
+            return f"video:{video_id}"
         return f"search:{(query or '').lower()}"
 
     def _reset_youtube_channel_view(self):
@@ -4559,6 +4562,36 @@ class Player:
             params["sp"] = sp
         return f"https://www.youtube.com/results?{urllib.parse.urlencode(params)}"
 
+    @staticmethod
+    def _youtube_video_id_from_query(query):
+        """Return a bare YouTube video ID, without mistaking normal text for one."""
+        value = str(query or "").strip()
+        return value if re.fullmatch(r"[A-Za-z0-9_-]{11}", value) else ""
+
+    def _youtube_search_video_args(self, query, limit):
+        video_id = self._youtube_video_id_from_query(query)
+        if video_id:
+            return (
+                (
+                    "--skip-download",
+                    "--dump-single-json",
+                    "--no-playlist",
+                    f"https://www.youtube.com/watch?v={video_id}",
+                ),
+                True,
+            )
+        video_limit = max(1, limit)
+        return (
+            (
+                "--flat-playlist",
+                "--dump-single-json",
+                "--playlist-end",
+                str(video_limit),
+                f"ytsearch{video_limit}:{query}",
+            ),
+            False,
+        )
+
     def _schedule_youtube_result_search(self, delay=0.08):
         query = self._youtube_query_from_search()
         if not query:
@@ -4573,8 +4606,10 @@ class Player:
             self._reset_youtube_channel_view()
         cache_key = self._youtube_cache_key(query=query)
         limit = self._youtube_result_limit()
+        required_results = 1 if self._youtube_video_id_from_query(query) else limit
         if cache_key == self._youtube_results_query and (
-            self._youtube_results_loading or len(self.youtube_results) >= limit
+            self._youtube_results_loading
+            or len(self.youtube_results) >= required_results
         ):
             return False
         if not self._yt_dlp_available():
@@ -4587,7 +4622,7 @@ class Player:
             return False
         self._terminate_proc(self._youtube_search_proc)
         cached = self._youtube_search_cache.get(cache_key)
-        if cached and len(cached) >= limit:
+        if cached and len(cached) >= required_results:
             self._youtube_results_query = cache_key
             self._youtube_results_loading = False
             self._youtube_search_debounce_at = 0.0
@@ -5592,12 +5627,14 @@ class Player:
             self._reset_youtube_channel_view()
         cache_key = self._youtube_cache_key(query=query)
         limit = self._youtube_result_limit()
+        required_results = 1 if self._youtube_video_id_from_query(query) else limit
         if cache_key == self._youtube_results_query and (
-            self._youtube_results_loading or len(self.youtube_results) >= limit
+            self._youtube_results_loading
+            or len(self.youtube_results) >= required_results
         ):
             return False
         cached = self._youtube_search_cache.get(cache_key)
-        if cached and len(cached) >= limit:
+        if cached and len(cached) >= required_results:
             self._youtube_results_query = cache_key
             self._youtube_results_loading = False
             self.youtube_results = [dict(r) for r in cached]
@@ -5629,18 +5666,17 @@ class Player:
 
         def worker():
             try:
-                video_limit = max(1, limit)
-                video_args = (
-                    "--flat-playlist",
-                    "--dump-single-json",
-                    "--playlist-end",
-                    str(video_limit),
-                    f"ytsearch{video_limit}:{query}",
+                video_args, direct_video = self._youtube_search_video_args(
+                    query, limit
                 )
                 data = self._run_youtube_search_json(request_id, *video_args)
                 if data is None:
                     return
-                entries = data.get("entries", []) if isinstance(data, dict) else []
+                entries = (
+                    [data]
+                    if direct_video and isinstance(data, dict)
+                    else data.get("entries", []) if isinstance(data, dict) else []
+                )
                 video_results = [
                     item
                     for item in self._extract_youtube_search_results(entries, limit)
@@ -5650,8 +5686,10 @@ class Player:
                     request_id,
                     cache_key,
                     video_results[:limit],
-                    False,
+                    direct_video,
                 )
+                if direct_video:
+                    return
 
                 channel_limit = min(YT_SEARCH_CHANNEL_LIMIT, max(2, limit // 8))
                 channel_results = self._extract_youtube_channels_from_video_entries(
