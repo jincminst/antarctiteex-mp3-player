@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Notify when Apple Music starts playing a chosen song on macOS."""
+"""Silently monitor Apple Music Hits for "drivers license" on macOS."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ from dataclasses import dataclass
 
 
 FIELD_SEPARATOR = "\x1f"
+STATION_NAME = "Apple Music Hits"
+STATION_URL = "music://music.apple.com/us/radio/apple-music-hits/ra.1498155548"
+TARGET_SONG = "drivers license"
+TARGET_ARTIST = "Olivia Rodrigo"
+
 MUSIC_STATUS_SCRIPT = r'''
 tell application "Music"
     set playbackState to (player state as string)
@@ -35,6 +40,27 @@ tell application "Music"
 end tell
 '''
 
+MUSIC_VOLUME_SCRIPT = r'''
+tell application "Music"
+    return sound volume as string
+end tell
+'''
+
+MUTE_MUSIC_SCRIPT = r'''
+tell application "Music"
+    set sound volume to 0
+end tell
+'''
+
+STOP_AND_RESTORE_SCRIPT = r'''
+on run argv
+    tell application "Music"
+        pause
+        set sound volume to (item 1 of argv as integer)
+    end tell
+end run
+'''
+
 NOTIFICATION_SCRIPT = r'''
 on run argv
     display notification (item 1 of argv) with title (item 2 of argv)
@@ -43,7 +69,7 @@ end run
 
 
 class MusicMonitorError(RuntimeError):
-    """Raised when macOS cannot provide Music playback information."""
+    """Raised when macOS cannot control or query Music."""
 
 
 @dataclass(frozen=True)
@@ -59,10 +85,11 @@ def normalized(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
-def matches(playback: Playback, song: str, artist: str = "") -> bool:
-    if normalized(playback.title) != normalized(song):
-        return False
-    return not artist or normalized(playback.artist) == normalized(artist)
+def matches(playback: Playback) -> bool:
+    return (
+        normalized(playback.title) == normalized(TARGET_SONG)
+        and normalized(playback.artist) == normalized(TARGET_ARTIST)
+    )
 
 
 def parse_playback(output: str) -> Playback:
@@ -83,88 +110,99 @@ def parse_playback(output: str) -> Playback:
     )
 
 
+def run_osascript(osascript: str, script: str, *arguments: str) -> str:
+    command = [osascript, "-e", script]
+    if arguments:
+        command.extend(["--", *arguments])
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode:
+        detail = result.stderr.strip() or "Apple Music could not be controlled"
+        raise MusicMonitorError(detail)
+    return result.stdout.strip()
+
+
 def read_playback(osascript: str) -> Playback:
-    running = subprocess.run(
-        ["pgrep", "-x", "Music"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if running.returncode:
-        return Playback("not_running")
+    return parse_playback(run_osascript(osascript, MUSIC_STATUS_SCRIPT))
+
+
+def get_music_volume(osascript: str) -> int:
+    output = run_osascript(osascript, MUSIC_VOLUME_SCRIPT)
+    try:
+        return max(0, min(100, int(output)))
+    except ValueError as exc:
+        raise MusicMonitorError(f"Music returned an invalid volume: {output!r}") from exc
+
+
+def start_silent_hits(osascript: str, open_command: str) -> int:
+    """Mute Music, open Apple Music Hits, and return the prior volume."""
+    old_volume = get_music_volume(osascript)
+    run_osascript(osascript, MUTE_MUSIC_SCRIPT)
     result = subprocess.run(
-        [osascript, "-e", MUSIC_STATUS_SCRIPT],
-        capture_output=True,
-        text=True,
-        check=False,
+        [open_command, STATION_URL], capture_output=True, text=True, check=False
     )
     if result.returncode:
-        detail = result.stderr.strip() or "Apple Music could not be queried"
+        run_osascript(osascript, STOP_AND_RESTORE_SCRIPT, str(old_volume))
+        detail = result.stderr.strip() or f"{STATION_NAME} could not be opened"
         raise MusicMonitorError(detail)
-    return parse_playback(result.stdout)
+    return old_volume
+
+
+def stop_and_restore(osascript: str, old_volume: int) -> None:
+    run_osascript(osascript, STOP_AND_RESTORE_SCRIPT, str(old_volume))
 
 
 def send_notification(osascript: str, playback: Playback) -> None:
-    message = playback.title
-    if playback.artist:
-        message += f" — {playback.artist}"
-    result = subprocess.run(
-        [
-            osascript,
-            "-e",
-            NOTIFICATION_SCRIPT,
-            "--",
-            message,
-            "Apple Music match",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    run_osascript(
+        osascript,
+        NOTIFICATION_SCRIPT,
+        f"{playback.title} — {playback.artist}",
+        f"Now on {STATION_NAME}",
     )
-    if result.returncode:
-        detail = result.stderr.strip() or "Notification could not be sent"
-        raise MusicMonitorError(detail)
 
 
-def monitor(song: str, artist: str, interval: float, osascript: str) -> None:
+def monitor(interval: float, osascript: str, open_command: str) -> None:
+    old_volume = start_silent_hits(osascript, open_command)
     notified_track = ""
     last_position: float | None = None
 
-    print(f'Watching Apple Music for "{song}"', end="")
-    if artist:
-        print(f' by "{artist}"', end="")
-    print(". Press Ctrl-C to stop.")
+    print(
+        f'Silently monitoring {STATION_NAME} for "{TARGET_SONG}" by '
+        f'"{TARGET_ARTIST}". Press Ctrl-C to stop.'
+    )
+    try:
+        while True:
+            playback = read_playback(osascript)
+            is_target = matches(playback)
 
-    while True:
-        playback = read_playback(osascript)
-        is_target = matches(playback, song, artist)
+            if not is_target:
+                notified_track = ""
+                last_position = None
+            elif playback.state == "playing":
+                track_key = playback.track_id or f"{playback.title}\0{playback.artist}"
+                restarted = (
+                    notified_track == track_key
+                    and playback.position is not None
+                    and last_position is not None
+                    and playback.position + max(1.0, interval) < last_position
+                )
+                if notified_track != track_key or restarted:
+                    send_notification(osascript, playback)
+                    print(f"Match: {playback.title} — {playback.artist}")
+                    notified_track = track_key
+                last_position = playback.position
 
-        if not is_target:
-            notified_track = ""
-            last_position = None
-        elif playback.state == "playing":
-            track_key = playback.track_id or f"{playback.title}\0{playback.artist}"
-            restarted = (
-                notified_track == track_key
-                and playback.position is not None
-                and last_position is not None
-                and playback.position + max(1.0, interval) < last_position
-            )
-            if notified_track != track_key or restarted:
-                send_notification(osascript, playback)
-                print(f"Match: {playback.title} — {playback.artist}")
-                notified_track = track_key
-            last_position = playback.position
-
-        time.sleep(interval)
+            time.sleep(interval)
+    finally:
+        stop_and_restore(osascript, old_volume)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Notify when Apple Music starts playing a chosen song."
+        description=(
+            f'Silently monitor {STATION_NAME} for "{TARGET_SONG}" by '
+            f'"{TARGET_ARTIST}".'
+        )
     )
-    parser.add_argument("song", nargs="?", help="exact song title to watch for")
-    parser.add_argument("--artist", default="", help="optional exact artist name")
     parser.add_argument(
         "--interval",
         type=float,
@@ -176,10 +214,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    song = (args.song or input("Song title: ")).strip()
-    if not song:
-        print("A song title is required.", file=sys.stderr)
-        return 2
     if args.interval < 0.2:
         print("--interval must be at least 0.2 seconds.", file=sys.stderr)
         return 2
@@ -187,14 +221,15 @@ def main(argv: list[str] | None = None) -> int:
         print("This monitor requires macOS and the Music app.", file=sys.stderr)
         return 2
     osascript = shutil.which("osascript")
-    if not osascript:
-        print("osascript was not found.", file=sys.stderr)
+    open_command = shutil.which("open")
+    if not osascript or not open_command:
+        print("Required macOS commands were not found.", file=sys.stderr)
         return 2
 
     try:
-        monitor(song, args.artist.strip(), args.interval, osascript)
+        monitor(args.interval, osascript, open_command)
     except KeyboardInterrupt:
-        print("\nStopped.")
+        print("\nStopped Apple Music Hits and restored the previous volume.")
         return 0
     except MusicMonitorError as exc:
         print(f"Apple Music monitor failed: {exc}", file=sys.stderr)
