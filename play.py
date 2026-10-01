@@ -179,8 +179,9 @@ YT_DLP_JS_RUNTIMES = (
 YT_DLP_IMPERSONATE = "chrome"
 YT_DOWNLOAD_FORMAT = "ba/b"
 YT_STATS_WORKERS = 3
-YT_SEARCH_RESULT_LIMIT = 75
-YT_SEARCH_CHANNEL_LIMIT = 8
+YT_SEARCH_RESULT_LIMIT = 30
+YT_SEARCH_CHANNEL_LIMIT = 5
+YT_SEARCH_TIMEOUT_S = 15.0
 LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
@@ -5265,7 +5266,7 @@ class Player:
         except Exception:
             pass
 
-    def _run_ytdlp_capture(self, cmd, proc_attr=None):
+    def _run_ytdlp_capture(self, cmd, proc_attr=None, timeout=None):
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -5274,7 +5275,17 @@ class Player:
         )
         if proc_attr:
             setattr(self, proc_attr, proc)
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                stdout, stderr = proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+            stderr = (stderr or "").rstrip()
+            stderr += ("\n" if stderr else "") + "yt-dlp search timed out"
         if proc_attr and getattr(self, proc_attr, None) is proc:
             setattr(self, proc_attr, None)
         proc.stdout = stdout
@@ -5464,11 +5475,15 @@ class Player:
             check=False,
         )
 
-    def _run_ytdlp_capture_with_format_fallback(self, cmd, proc_attr=None):
-        proc = self._run_ytdlp_capture(cmd, proc_attr)
+    def _run_ytdlp_capture_with_format_fallback(
+        self, cmd, proc_attr=None, timeout=None
+    ):
+        proc = self._run_ytdlp_capture(cmd, proc_attr, timeout=timeout)
         if proc.returncode == 0 or not self._yt_dlp_requested_format_unavailable(proc):
             return proc
-        return self._run_ytdlp_capture(self._without_ytdlp_format(cmd), proc_attr)
+        return self._run_ytdlp_capture(
+            self._without_ytdlp_format(cmd), proc_attr, timeout=timeout
+        )
 
     def _run_ytdlp_with_cookie_retry(self, make_cmd):
         proc = self._run_ytdlp_with_format_fallback(make_cmd(False))
@@ -5476,11 +5491,17 @@ class Player:
             return proc
         return self._run_ytdlp_with_format_fallback(make_cmd(True))
 
-    def _run_ytdlp_capture_with_cookie_retry(self, make_cmd, proc_attr=None):
-        proc = self._run_ytdlp_capture_with_format_fallback(make_cmd(False), proc_attr)
+    def _run_ytdlp_capture_with_cookie_retry(
+        self, make_cmd, proc_attr=None, timeout=None
+    ):
+        proc = self._run_ytdlp_capture_with_format_fallback(
+            make_cmd(False), proc_attr, timeout=timeout
+        )
         if proc.returncode == 0 or not self._yt_dlp_needs_cookie_retry(proc):
             return proc
-        return self._run_ytdlp_capture_with_format_fallback(make_cmd(True), proc_attr)
+        return self._run_ytdlp_capture_with_format_fallback(
+            make_cmd(True), proc_attr, timeout=timeout
+        )
 
     def _find_downloaded_ext(self, folder, ext):
         suffix = "." + ext.lower().lstrip(".")
@@ -5590,6 +5611,7 @@ class Player:
                 *base_args, use_cookies=use_cookies
             ),
             "_youtube_search_proc",
+            timeout=YT_SEARCH_TIMEOUT_S,
         )
         if proc.returncode != 0:
             raise RuntimeError(self._yt_dlp_error(proc))
@@ -5682,46 +5704,19 @@ class Player:
                     for item in self._extract_youtube_search_results(entries, limit)
                     if not self._is_youtube_channel_result(item)
                 ]
-                self._pending_youtube_search_result = (
-                    request_id,
-                    cache_key,
-                    video_results[:limit],
-                    direct_video,
-                )
                 if direct_video:
+                    self._pending_youtube_search_result = (
+                        request_id,
+                        cache_key,
+                        video_results[:limit],
+                        True,
+                    )
                     return
 
                 channel_limit = min(YT_SEARCH_CHANNEL_LIMIT, max(2, limit // 8))
                 channel_results = self._extract_youtube_channels_from_video_entries(
                     entries, channel_limit
                 )
-                channel_args = (
-                    "--flat-playlist",
-                    "--dump-single-json",
-                    "--playlist-end",
-                    str(channel_limit),
-                    self._youtube_search_url(query, "EgIQAg=="),
-                )
-                try:
-                    channel_data = self._run_youtube_search_json(
-                        request_id, *channel_args
-                    )
-                    if channel_data is None:
-                        return
-                    channel_entries = (
-                        channel_data.get("entries", [])
-                        if isinstance(channel_data, dict)
-                        else []
-                    )
-                    direct_channel_results = self._extract_youtube_channel_search_results(
-                        channel_entries, channel_limit
-                    )
-                    channel_results = self._merge_youtube_results(
-                        channel_results, direct_channel_results
-                    )
-                except Exception:
-                    pass
-
                 results = self._merge_youtube_results(video_results, channel_results)
                 self._pending_youtube_search_result = (
                     request_id,
@@ -5790,6 +5785,8 @@ class Player:
                 base_args = (
                     "--flat-playlist",
                     "--dump-single-json",
+                    "--playlist-end",
+                    str(self._youtube_result_limit()),
                     target,
                 )
                 if request_id != self._youtube_search_request_id:
@@ -5799,6 +5796,7 @@ class Player:
                         *base_args, use_cookies=use_cookies
                     ),
                     "_youtube_search_proc",
+                    timeout=YT_SEARCH_TIMEOUT_S,
                 )
                 if proc.returncode != 0:
                     raise RuntimeError(self._yt_dlp_error(proc))
