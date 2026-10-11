@@ -1306,6 +1306,7 @@ class PureHelperTests(unittest.TestCase):
 
     def test_youtube_urls_and_ids(self):
         player = bare_player()
+        playlist_id = "PLJP5_qSxMbkKnjgQZUJPT6CV09yoIheUj"
         self.assertIn("search_query=a+%26+b", player._youtube_search_url("a & b"))
         self.assertEqual(
             player._youtube_video_id_from_query(" dQw4w9WgXcQ "),
@@ -1313,6 +1314,16 @@ class PureHelperTests(unittest.TestCase):
         )
         self.assertEqual(player._youtube_video_id_from_query("short"), "")
         self.assertEqual(player._youtube_video_id_from_query("eleven chars"), "")
+        self.assertEqual(
+            player._youtube_playlist_id_from_query(f" {playlist_id} "), playlist_id
+        )
+        self.assertEqual(
+            player._youtube_playlist_id_from_query(
+                f"https://www.youtube.com/playlist?list={playlist_id}"
+            ),
+            playlist_id,
+        )
+        self.assertEqual(player._youtube_playlist_id_from_query("music playlist"), "")
         self.assertEqual(
             player._youtube_video_id_from_url("https://youtu.be/dQw4w9WgXcQ"),
             "dQw4w9WgXcQ",
@@ -1342,6 +1353,19 @@ class PureHelperTests(unittest.TestCase):
         self.assertFalse(direct)
         self.assertEqual(args[-1], "ytsearch25:music video")
         self.assertIn("--flat-playlist", args)
+
+    def test_bare_youtube_playlist_id_targets_only_that_playlist(self):
+        player = bare_player()
+        playlist_id = "PLJP5_qSxMbkKnjgQZUJPT6CV09yoIheUj"
+
+        args = player._youtube_direct_playlist_args(playlist_id)
+
+        self.assertEqual(args[-1], f"https://www.youtube.com/playlist?list={playlist_id}")
+        self.assertEqual(args[args.index("--playlist-end") + 1], "1")
+        self.assertEqual(
+            player._youtube_cache_key(query=playlist_id),
+            f"playlist:{playlist_id}",
+        )
 
     def test_youtube_playlist_search_uses_playlist_filter(self):
         player = bare_player()

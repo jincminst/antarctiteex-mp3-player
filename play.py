@@ -4515,6 +4515,9 @@ class Player:
     def _youtube_cache_key(self, query=None, channel_url=None):
         if channel_url:
             return f"channel:{channel_url}"
+        playlist_id = self._youtube_playlist_id_from_query(query)
+        if playlist_id:
+            return f"playlist:{playlist_id}"
         video_id = self._youtube_video_id_from_query(query)
         if video_id:
             return f"video:{video_id}"
@@ -4617,6 +4620,36 @@ class Player:
         value = str(query or "").strip()
         return value if re.fullmatch(r"[A-Za-z0-9_-]{11}", value) else ""
 
+    @staticmethod
+    def _youtube_playlist_id_from_query(query):
+        """Return a playlist ID from a playlist URL or a recognizable bare ID."""
+        value = str(query or "").strip()
+        if not value:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(
+                value if "://" in value else f"https://{value}"
+            )
+            if parsed.netloc.lower().removeprefix("www.") in {
+                "youtube.com",
+                "m.youtube.com",
+                "music.youtube.com",
+                "youtu.be",
+            }:
+                playlist_ids = urllib.parse.parse_qs(parsed.query).get("list") or []
+                if playlist_ids and re.fullmatch(
+                    r"[A-Za-z0-9_-]{10,}", playlist_ids[0]
+                ):
+                    return playlist_ids[0]
+        except (TypeError, ValueError):
+            pass
+        # Requiring a known prefix keeps normal searches from becoming IDs.
+        if re.fullmatch(
+            r"(?:PL|UU|LL|FL|UL|RD|OLAK5uy_)[A-Za-z0-9_-]{10,}", value
+        ):
+            return value
+        return ""
+
     def _youtube_search_video_args(self, query, limit):
         video_id = self._youtube_video_id_from_query(query)
         if video_id:
@@ -4652,6 +4685,20 @@ class Player:
             self._youtube_search_url(query, "EgIQAw=="),
         )
 
+    def _youtube_direct_playlist_args(self, playlist_id):
+        """Fetch one playlist's metadata without expanding the whole playlist."""
+        target = (
+            "https://www.youtube.com/playlist?"
+            f"{urllib.parse.urlencode({'list': playlist_id})}"
+        )
+        return (
+            "--flat-playlist",
+            "--dump-single-json",
+            "--playlist-end",
+            "1",
+            target,
+        )
+
     def _schedule_youtube_result_search(self, delay=0.08):
         query = self._youtube_query_from_search()
         if not query:
@@ -4666,7 +4713,12 @@ class Player:
             self._reset_youtube_channel_view()
         cache_key = self._youtube_cache_key(query=query)
         limit = self._youtube_result_limit()
-        required_results = 1 if self._youtube_video_id_from_query(query) else limit
+        required_results = (
+            1
+            if self._youtube_video_id_from_query(query)
+            or self._youtube_playlist_id_from_query(query)
+            else limit
+        )
         if cache_key == self._youtube_results_query and (
             self._youtube_results_loading
             or len(self.youtube_results) >= required_results
@@ -5833,7 +5885,10 @@ class Player:
             self._reset_youtube_channel_view()
         cache_key = self._youtube_cache_key(query=query)
         limit = self._youtube_result_limit()
-        required_results = 1 if self._youtube_video_id_from_query(query) else limit
+        playlist_id = self._youtube_playlist_id_from_query(query)
+        required_results = (
+            1 if self._youtube_video_id_from_query(query) or playlist_id else limit
+        )
         if cache_key == self._youtube_results_query and (
             self._youtube_results_loading
             or len(self.youtube_results) >= required_results
@@ -5872,6 +5927,31 @@ class Player:
 
         def worker():
             try:
+                if playlist_id:
+                    playlist_data = self._run_youtube_search_json(
+                        request_id,
+                        *self._youtube_direct_playlist_args(playlist_id),
+                    )
+                    if playlist_data is None:
+                        return
+                    playlist_entry = dict(playlist_data or {})
+                    playlist_entry["id"] = playlist_id
+                    playlist_entry["playlist_id"] = playlist_id
+                    playlist_entry["_type"] = "playlist"
+                    playlist_entry["webpage_url"] = (
+                        "https://www.youtube.com/playlist?"
+                        f"{urllib.parse.urlencode({'list': playlist_id})}"
+                    )
+                    playlist_results = self._extract_youtube_playlist_results(
+                        [playlist_entry], 1
+                    )
+                    self._pending_youtube_search_result = (
+                        request_id,
+                        cache_key,
+                        playlist_results,
+                        True,
+                    )
+                    return
                 video_args, direct_video = self._youtube_search_video_args(
                     query, limit
                 )
