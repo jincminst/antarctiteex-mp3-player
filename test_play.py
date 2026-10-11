@@ -1343,6 +1343,77 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(args[-1], "ytsearch25:music video")
         self.assertIn("--flat-playlist", args)
 
+    def test_youtube_playlist_search_uses_playlist_filter(self):
+        player = bare_player()
+
+        args = player._youtube_search_playlist_args("arcane soundtrack", 6)
+
+        self.assertIn("--flat-playlist", args)
+        self.assertIn("--playlist-end", args)
+        self.assertEqual(args[args.index("--playlist-end") + 1], "6")
+        self.assertIn("sp=EgIQAw%3D%3D", args[-1])
+
+    def test_youtube_playlist_results_and_entries_preserve_order(self):
+        player = bare_player()
+        rows = player._extract_youtube_playlist_results(
+            [
+                {
+                    "_type": "url",
+                    "ie_key": "YoutubeTab",
+                    "id": "PL123",
+                    "title": "My Mix",
+                    "url": "https://www.youtube.com/playlist?list=PL123",
+                    "channel": "Uploader",
+                }
+            ],
+            6,
+        )
+        entries = player._extract_youtube_playlist_entries(
+            {
+                "entries": [
+                    {"id": "one", "title": "First"},
+                    {"id": "two", "title": "Second"},
+                    {"id": "one", "title": "Duplicate"},
+                    {"id": "gone", "title": "Private video"},
+                ]
+            }
+        )
+
+        self.assertEqual(rows[0]["kind"], "playlist")
+        self.assertEqual(rows[0]["id"], "PL123")
+        self.assertEqual([item["title"] for item in entries], ["First", "Second"])
+        self.assertEqual(
+            [item["url"] for item in entries],
+            [
+                "https://www.youtube.com/watch?v=one",
+                "https://www.youtube.com/watch?v=two",
+            ],
+        )
+
+    def test_youtube_playlist_queue_starts_only_one_download(self):
+        player = bare_player()
+        player._youtube_playlist_loading = False
+        player._youtube_download_loading = False
+        player._youtube_playlist_queue = play.deque([
+            {"id": "one", "title": "First", "kind": "video"},
+            {"id": "two", "title": "Second", "kind": "video"},
+        ])
+        player._youtube_playlist_total = 2
+        player._youtube_playlist_completed = 0
+        player._youtube_playlist_failed = 0
+        player.status_msg = ""
+        player._start_youtube_download = mock.Mock(return_value=True)
+
+        started = player._start_next_youtube_playlist_item()
+
+        self.assertTrue(started)
+        self.assertEqual(len(player._youtube_playlist_queue), 1)
+        player._start_youtube_download.assert_called_once_with(
+            {"id": "one", "title": "First", "kind": "video"},
+            save_name="First",
+            playlist_item=True,
+        )
+
     def test_youtube_result_extraction_deduplicates_and_skips_invalid_rows(self):
         player = bare_player()
         entries = [

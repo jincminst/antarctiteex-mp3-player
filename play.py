@@ -181,6 +181,7 @@ YT_DOWNLOAD_FORMAT = "ba/b"
 YT_STATS_WORKERS = 3
 YT_SEARCH_RESULT_LIMIT = 30
 YT_SEARCH_CHANNEL_LIMIT = 5
+YT_SEARCH_PLAYLIST_LIMIT = 6
 YT_SEARCH_TIMEOUT_S = 15.0
 LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
@@ -619,6 +620,8 @@ class Player:
         self._last_volume_apply_at = 0.0
         self._pending_youtube_result = None
         self._pending_youtube_error = None
+        self._pending_youtube_playlist_result = None
+        self._pending_youtube_playlist_error = None
         self._pending_youtube_search_result = None
         self._pending_youtube_search_error = None
         self._pending_youtube_stats_result = None
@@ -643,6 +646,13 @@ class Player:
         self._youtube_request_id = 0
         self._youtube_download_loading = False
         self._youtube_download_request_id = 0
+        self._youtube_playlist_loading = False
+        self._youtube_playlist_queue = deque()
+        self._youtube_playlist_total = 0
+        self._youtube_playlist_completed = 0
+        self._youtube_playlist_failed = 0
+        self._youtube_playlist_title = ""
+        self._youtube_playlist_first_played = False
         self._youtube_results_loading = False
         self._youtube_stats_loading = False
         self._youtube_search_request_id = 0
@@ -663,6 +673,7 @@ class Player:
         self._youtube_search_proc = None
         self._youtube_preview_proc = None
         self._youtube_download_proc = None
+        self._youtube_playlist_proc = None
 
         self._screen_locked = False
         self._paused_by_lock = False
@@ -4453,6 +4464,7 @@ class Player:
         self._youtube_loading = False
         self._youtube_results_loading = False
         self._youtube_stats_loading = False
+        canceled_playlist = self._cancel_youtube_playlist_download()
         self._terminate_proc(self._youtube_preview_proc)
         if self._youtube_search_proc is not None:
             self._youtube_search_request_id += 1
@@ -4467,7 +4479,11 @@ class Player:
         self._youtube_channel_url = ""
         stopped = self._stop_youtube_preview()
         self.youtube_preview_enabled = False
-        self.status_msg = "Deleted YouTube preview" if stopped else ""
+        self.status_msg = (
+            "Canceled YouTube playlist download"
+            if canceled_playlist
+            else "Deleted YouTube preview" if stopped else ""
+        )
         self._rebuild()
         self._layout()
         self._needs_redraw_hdr = True
@@ -4508,6 +4524,9 @@ class Player:
     def _is_youtube_channel_result(self, result):
         return self._youtube_result_kind(result) == "channel"
 
+    def _is_youtube_playlist_result(self, result):
+        return self._youtube_result_kind(result) == "playlist"
+
     def _youtube_channel_target(self, result):
         if not isinstance(result, dict):
             return ""
@@ -4525,6 +4544,24 @@ class Player:
             return f"https://www.youtube.com/{channel_id}"
         if channel_id.startswith("UC"):
             return f"https://www.youtube.com/channel/{channel_id}"
+        return ""
+
+    def _youtube_playlist_target(self, result):
+        if not isinstance(result, dict):
+            return ""
+        if not self._is_youtube_playlist_result(result):
+            return ""
+        url = self._youtube_abs_url(
+            result.get("webpage_url") or result.get("url") or ""
+        )
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+        playlist_id = str(result.get("id") or "").strip()
+        if playlist_id:
+            return (
+                "https://www.youtube.com/playlist?"
+                f"{urllib.parse.urlencode({'list': playlist_id})}"
+            )
         return ""
 
     def _youtube_channel_videos_target(self, result_or_url):
@@ -4593,6 +4630,17 @@ class Player:
             False,
         )
 
+    def _youtube_search_playlist_args(self, query, limit):
+        """Build a small playlist-only search without expanding its entries."""
+        playlist_limit = max(1, int(limit))
+        return (
+            "--flat-playlist",
+            "--dump-single-json",
+            "--playlist-end",
+            str(playlist_limit),
+            self._youtube_search_url(query, "EgIQAw=="),
+        )
+
     def _schedule_youtube_result_search(self, delay=0.08):
         query = self._youtube_query_from_search()
         if not query:
@@ -4651,7 +4699,10 @@ class Player:
     def _youtube_video_target(self, result):
         if not isinstance(result, dict):
             return ""
-        if self._is_youtube_channel_result(result):
+        if (
+            self._is_youtube_channel_result(result)
+            or self._is_youtube_playlist_result(result)
+        ):
             return ""
         url = result.get("url") or ""
         if isinstance(url, str) and url.startswith("http"):
@@ -4684,7 +4735,13 @@ class Player:
         if isinstance(self._youtube_active_result, dict):
             return self._youtube_active_result
         for result in self.youtube_results:
-            if not self._is_youtube_channel_result(result):
+            if (
+                not self._is_youtube_channel_result(result)
+                and not self._is_youtube_playlist_result(result)
+            ):
+                return result
+        for result in self.youtube_results:
+            if self._is_youtube_playlist_result(result):
                 return result
         return None
 
@@ -4763,7 +4820,11 @@ class Player:
             )
         else:
             key = lambda item: (
-                0 if self._is_youtube_channel_result(item) else 1,
+                (
+                    0 if self._is_youtube_channel_result(item)
+                    else 1 if self._is_youtube_playlist_result(item)
+                    else 2
+                ),
                 str(item.get("title") or "").lower(),
             )
         self.youtube_results.sort(key=key, reverse=reverse)
@@ -4922,6 +4983,116 @@ class Player:
             )
             if len(results) >= limit:
                 break
+        return results
+
+    def _extract_youtube_playlist_results(self, entries, limit):
+        results = []
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            kind = str(entry.get("_type") or entry.get("ie_key") or "").lower()
+            raw_url = self._youtube_abs_url(
+                entry.get("webpage_url") or entry.get("url") or ""
+            )
+            playlist_id = str(
+                entry.get("id") or entry.get("playlist_id") or ""
+            ).strip()
+            is_playlist = (
+                "playlist" in kind
+                or "list=" in raw_url
+                or "/playlist" in raw_url
+            )
+            if not is_playlist:
+                continue
+            if not (isinstance(raw_url, str) and raw_url.startswith("http")):
+                if not playlist_id:
+                    continue
+                raw_url = (
+                    "https://www.youtube.com/playlist?"
+                    f"{urllib.parse.urlencode({'list': playlist_id})}"
+                )
+            if not playlist_id:
+                try:
+                    playlist_id = (
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(raw_url).query
+                        ).get("list") or [raw_url]
+                    )[0]
+                except Exception:
+                    playlist_id = raw_url
+            if playlist_id in seen:
+                continue
+            title = str(entry.get("title") or "Untitled playlist").strip()
+            if not title:
+                continue
+            seen.add(playlist_id)
+            results.append(
+                {
+                    "title": title,
+                    "channel": str(
+                        entry.get("channel")
+                        or entry.get("uploader")
+                        or entry.get("channel_title")
+                        or ""
+                    ).strip(),
+                    "id": playlist_id,
+                    "url": raw_url,
+                    "views": None,
+                    "likes": None,
+                    "count": self._coerce_yt_int(
+                        entry.get("playlist_count")
+                        or entry.get("n_entries")
+                        or entry.get("entry_count")
+                    ),
+                    "kind": "playlist",
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+    def _extract_youtube_playlist_entries(self, data):
+        """Return lightweight video rows in the playlist's original order."""
+        entries = data.get("entries", []) if isinstance(data, dict) else []
+        results = []
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            title = str(entry.get("title") or "").strip()
+            video_id = str(
+                entry.get("id")
+                or entry.get("display_id")
+                or self._youtube_video_id_from_url(entry.get("url"))
+                or ""
+            ).strip()
+            availability = str(entry.get("availability") or "").lower()
+            if (
+                not title
+                or not video_id
+                or video_id in seen
+                or title.lower() in {"deleted video", "private video"}
+                or availability in {"private", "premium_only", "subscriber_only"}
+            ):
+                continue
+            seen.add(video_id)
+            results.append(
+                {
+                    "title": title,
+                    "channel": str(
+                        entry.get("channel")
+                        or entry.get("uploader")
+                        or entry.get("channel_title")
+                        or ""
+                    ).strip(),
+                    "id": video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "views": entry.get("view_count"),
+                    "likes": entry.get("like_count"),
+                    "kind": "video",
+                }
+            )
         return results
 
     def _extract_youtube_channels_from_video_entries(self, entries, limit):
@@ -5104,6 +5275,7 @@ class Player:
         return any(
             isinstance(item, dict)
             and not self._is_youtube_channel_result(item)
+            and not self._is_youtube_playlist_result(item)
             and (item.get("views") is None or item.get("likes") is None)
             for item in results
         )
@@ -5124,6 +5296,7 @@ class Player:
             if (
                 isinstance(item, dict)
                 and not self._is_youtube_channel_result(item)
+                and not self._is_youtube_playlist_result(item)
                 and (item.get("id") or item.get("url"))
             )
         ]
@@ -5717,12 +5890,42 @@ class Player:
                 channel_results = self._extract_youtube_channels_from_video_entries(
                     entries, channel_limit
                 )
-                results = self._merge_youtube_results(video_results, channel_results)
+                initial_results = self._merge_youtube_results(
+                    video_results, channel_results
+                )
                 self._pending_youtube_search_result = (
                     request_id,
                     cache_key,
-                    results,
-                    True,
+                    initial_results,
+                    False,
+                )
+                playlist_results = []
+                try:
+                    playlist_args = self._youtube_search_playlist_args(
+                        query, YT_SEARCH_PLAYLIST_LIMIT
+                    )
+                    playlist_data = self._run_youtube_search_json(
+                        request_id, *playlist_args
+                    )
+                    if playlist_data is None:
+                        return
+                    playlist_entries = (
+                        playlist_data.get("entries", [])
+                        if isinstance(playlist_data, dict)
+                        else []
+                    )
+                    playlist_results = self._extract_youtube_playlist_results(
+                        playlist_entries, YT_SEARCH_PLAYLIST_LIMIT
+                    )
+                except Exception:
+                    # A filtered playlist search is supplementary. Keep the
+                    # already loaded video/channel results if YouTube rejects it.
+                    playlist_results = []
+                results = self._merge_youtube_results(
+                    initial_results, playlist_results
+                )
+                self._pending_youtube_search_result = (
+                    request_id, cache_key, results, True
                 )
             except Exception as exc:
                 self._pending_youtube_search_error = (request_id, cache_key, str(exc))
@@ -5843,6 +6046,8 @@ class Player:
     def _start_youtube_preview(self, result=None):
         if self._shutting_down:
             return False
+        if self._is_youtube_playlist_result(result):
+            return self._start_youtube_playlist_download(result)
         query = self._youtube_query_from_search()
         target = self._youtube_video_target(result) if result is not None else query
         title_hint = result.get("title", "") if isinstance(result, dict) else ""
@@ -5925,9 +6130,152 @@ class Player:
         threading.Thread(target=worker, daemon=True).start()
         return True
 
-    def _start_youtube_download(self, result=None, save_name=None):
+    def _start_youtube_playlist_download(self, result):
+        target = self._youtube_playlist_target(result)
+        if not target:
+            self.status_msg = "Could not open that YouTube playlist"
+            self._needs_redraw_hdr = True
+            self.dirty = True
+            return False
+        if self._youtube_playlist_loading or self._youtube_download_loading:
+            return False
+        if not self._yt_dlp_available():
+            self.status_msg = "yt-dlp is required for playlist downloads"
+            self._needs_redraw_hdr = True
+            self.dirty = True
+            return False
+        if not shutil.which("ffmpeg"):
+            self.status_msg = "ffmpeg is required for playlist downloads"
+            self._needs_redraw_hdr = True
+            self.dirty = True
+            return False
+
+        self._youtube_download_request_id += 1
+        request_id = self._youtube_download_request_id
+        title = str(result.get("title") or "YouTube playlist").strip()
+        self._youtube_playlist_loading = True
+        self._youtube_playlist_queue = deque()
+        self._youtube_playlist_total = 0
+        self._youtube_playlist_completed = 0
+        self._youtube_playlist_failed = 0
+        self._youtube_playlist_title = title
+        self._youtube_playlist_first_played = False
+        self._youtube_active_result = dict(result)
+        self._pending_youtube_playlist_result = None
+        self._pending_youtube_playlist_error = None
+        self.status_msg = f"Loading playlist: {title}"
+        self._set_youtube_download_progress(
+            request_id, "Reading playlist", 0.0, title=title
+        )
+        self._needs_redraw_hdr = True
+        self.dirty = True
+
+        def worker():
+            try:
+                proc = self._run_ytdlp_capture_with_cookie_retry(
+                    lambda use_cookies: self._yt_dlp_cmd(
+                        "--flat-playlist",
+                        "--dump-single-json",
+                        "--ignore-errors",
+                        target,
+                        use_cookies=use_cookies,
+                    ),
+                    "_youtube_playlist_proc",
+                )
+                if request_id != self._youtube_download_request_id:
+                    return
+                if proc.returncode != 0:
+                    raise RuntimeError(self._yt_dlp_error(proc))
+                data = json.loads(proc.stdout or "{}")
+                entries = self._extract_youtube_playlist_entries(data)
+                if not entries:
+                    raise RuntimeError("playlist has no available videos")
+                self._pending_youtube_playlist_result = (
+                    request_id, title, entries
+                )
+            except Exception as exc:
+                self._pending_youtube_playlist_error = (request_id, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _start_next_youtube_playlist_item(self):
+        if self._youtube_playlist_loading or self._youtube_download_loading:
+            return False
+        if not self._youtube_playlist_queue:
+            self._finish_youtube_playlist_download()
+            return False
+        result = self._youtube_playlist_queue.popleft()
+        position = self._youtube_playlist_completed + self._youtube_playlist_failed + 1
+        title = str(result.get("title") or "Untitled").strip()
+        self.status_msg = (
+            f"Downloading {position}/{self._youtube_playlist_total}: {title}"
+        )
+        return self._start_youtube_download(
+            result,
+            save_name=self._clean_mp3_basename(title),
+            playlist_item=True,
+        )
+
+    def _finish_youtube_playlist_download(self):
+        total = self._youtube_playlist_total
+        completed = self._youtube_playlist_completed
+        failed = self._youtube_playlist_failed
+        if total <= 0:
+            return
+        self._youtube_playlist_queue = deque()
+        self._youtube_playlist_total = 0
+        self._youtube_playlist_loading = False
+        self._youtube_playlist_title = ""
+        self.youtube_download_progress = None
+        self.youtube_preview_enabled = False
+        self.youtube_results = []
+        self._youtube_active_result = None
+        self._youtube_results_query = ""
+        if failed:
+            self.status_msg = f"Playlist finished: {completed} saved, {failed} skipped"
+        else:
+            self.status_msg = f"Playlist downloaded: {completed} songs"
+        self._emit_notification(self.status_msg, timeout=7)
+        self._rebuild()
+        self._layout()
+        self._needs_redraw_hdr = True
+        self._needs_redraw_lst = True
+        self._needs_redraw_inp = True
+        self.dirty = True
+
+    def _cancel_youtube_playlist_download(self):
+        active = (
+            self._youtube_playlist_loading
+            or bool(self._youtube_playlist_queue)
+            or self._youtube_playlist_total > 0
+        )
+        if not active:
+            return False
+        self._youtube_download_request_id += 1
+        self._terminate_proc(self._youtube_playlist_proc)
+        self._terminate_proc(self._youtube_download_proc)
+        self._youtube_playlist_proc = None
+        self._youtube_download_proc = None
+        self._youtube_playlist_loading = False
+        self._youtube_download_loading = False
+        self._youtube_playlist_queue = deque()
+        self._youtube_playlist_total = 0
+        self._youtube_playlist_title = ""
+        self._pending_youtube_playlist_result = None
+        self._pending_youtube_playlist_error = None
+        self._pending_youtube_download_result = None
+        self._pending_youtube_download_error = None
+        self.youtube_download_progress = None
+        return True
+
+    def _start_youtube_download(
+        self, result=None, save_name=None, playlist_item=False
+    ):
         if result is None:
             result = self._youtube_download_result()
+        if self._is_youtube_playlist_result(result):
+            return self._start_youtube_playlist_download(result)
         target = self._youtube_video_target(result)
         if not target:
             self.status_msg = "No YouTube result to download"
@@ -5959,6 +6307,16 @@ class Player:
             self._clean_mp3_basename(save_name) if save_name is not None else ""
         )
         self.status_msg = f"Downloading: {title_hint}"
+        if playlist_item:
+            position = (
+                self._youtube_playlist_completed
+                + self._youtube_playlist_failed
+                + 1
+            )
+            self.status_msg = (
+                f"Downloading {position}/{self._youtube_playlist_total}: "
+                f"{title_hint}"
+            )
         self._set_youtube_download_progress(
             request_id, "Preparing download", 0.0, title=title_hint
         )
@@ -6058,6 +6416,7 @@ class Player:
                     final_path,
                     title,
                     not bool(requested_name),
+                    bool(playlist_item),
                 )
             except Exception as exc:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -6469,6 +6828,8 @@ class Player:
             or self._pending_youtube_stats_error is not None
             or self._pending_youtube_download_result is not None
             or self._pending_youtube_download_error is not None
+            or self._pending_youtube_playlist_result is not None
+            or self._pending_youtube_playlist_error is not None
             or self._pending_preview_cleanup
             or self._youtube_search_debounce_at
         ):
@@ -6583,43 +6944,112 @@ class Player:
                 self._needs_redraw_hdr = True
                 self._needs_redraw_lst = True
                 self.dirty = True
+        if self._pending_youtube_playlist_error is not None:
+            request_id, error = self._pending_youtube_playlist_error
+            self._pending_youtube_playlist_error = None
+            if request_id == self._youtube_download_request_id:
+                self._youtube_playlist_loading = False
+                self.youtube_download_progress = None
+                self.status_msg = f"YouTube playlist failed: {error}"
+                self._emit_notification(
+                    self.status_msg, severity="error", timeout=7
+                )
+                self._needs_redraw_hdr = True
+                self.dirty = True
+        if self._pending_youtube_playlist_result is not None:
+            request_id, title, entries = self._pending_youtube_playlist_result
+            self._pending_youtube_playlist_result = None
+            if request_id == self._youtube_download_request_id:
+                self._youtube_playlist_loading = False
+                self._youtube_playlist_queue = deque(entries)
+                self._youtube_playlist_total = len(entries)
+                self._youtube_playlist_completed = 0
+                self._youtube_playlist_failed = 0
+                self._youtube_playlist_title = title
+                self.status_msg = f"Playlist ready: {len(entries)} songs"
+                self._start_next_youtube_playlist_item()
+                self._needs_redraw_hdr = True
+                self.dirty = True
         if self._pending_youtube_download_error is not None:
             request_id, error = self._pending_youtube_download_error
             self._pending_youtube_download_error = None
             if request_id == self._youtube_download_request_id:
                 self._youtube_download_loading = False
                 self.youtube_download_progress = None
-                self.status_msg = f"YouTube download failed: {error}"
+                playlist_item = self._youtube_playlist_total > 0
+                if playlist_item:
+                    self._youtube_playlist_failed += 1
+                    self.status_msg = (
+                        f"Skipped playlist item: {error}; continuing"
+                    )
+                else:
+                    self.status_msg = f"YouTube download failed: {error}"
                 self._emit_notification(
                     self.status_msg, severity="error", timeout=7
                 )
                 self._needs_redraw_hdr = True
                 self.dirty = True
+                if playlist_item:
+                    self._start_next_youtube_playlist_item()
         if self._pending_youtube_download_result is not None:
             pending_download = self._pending_youtube_download_result
-            if len(pending_download) >= 5:
+            if len(pending_download) >= 6:
+                (
+                    request_id,
+                    temp_dir,
+                    final_path,
+                    title,
+                    prompt_for_name,
+                    playlist_item,
+                ) = pending_download
+            elif len(pending_download) >= 5:
                 request_id, temp_dir, final_path, title, prompt_for_name = (
                     pending_download
                 )
+                playlist_item = False
             else:
                 request_id, temp_dir, final_path, title = pending_download
                 prompt_for_name = True
+                playlist_item = False
             self._pending_youtube_download_result = None
             if request_id == self._youtube_download_request_id:
                 self._youtube_download_loading = False
                 self.youtube_download_progress = None
-                self._youtube_search_request_id += 1
-                self._youtube_results_loading = False
-                self.youtube_results = []
-                self._youtube_active_result = None
-                self._youtube_results_query = ""
-                self.youtube_preview_enabled = False
-                self._cleanup_youtube_preview(stop_audio=True)
                 shutil.rmtree(temp_dir, ignore_errors=True)
-                if prompt_for_name:
+                if playlist_item:
+                    self._youtube_playlist_completed += 1
+                    saved_name = os.path.splitext(os.path.basename(final_path))[0]
+                    position = (
+                        self._youtube_playlist_completed
+                        + self._youtube_playlist_failed
+                    )
+                    self.status_msg = (
+                        f"Saved {position}/{self._youtube_playlist_total}: "
+                        f"{saved_name}"
+                    )
+                    self._rebuild()
+                    if not self._youtube_playlist_first_played:
+                        self._youtube_playlist_first_played = True
+                        self.play(saved_name)
+                    self._start_next_youtube_playlist_item()
+                elif prompt_for_name:
+                    self._youtube_search_request_id += 1
+                    self._youtube_results_loading = False
+                    self.youtube_results = []
+                    self._youtube_active_result = None
+                    self._youtube_results_query = ""
+                    self.youtube_preview_enabled = False
+                    self._cleanup_youtube_preview(stop_audio=True)
                     self._emit_notification(f"Downloaded '{title}'")
                     self._start_download_rename(final_path, title)
                 else:
+                    self._youtube_search_request_id += 1
+                    self._youtube_results_loading = False
+                    self.youtube_results = []
+                    self._youtube_active_result = None
+                    self._youtube_results_query = ""
+                    self.youtube_preview_enabled = False
+                    self._cleanup_youtube_preview(stop_audio=True)
                     saved_name = os.path.splitext(os.path.basename(final_path))[0]
                     self.status_msg = f"Saved: {saved_name}"
                     self._emit_notification(self.status_msg)
@@ -8115,13 +8545,16 @@ class Player:
                                 break
                             result = self.youtube_results[idx]
                             is_channel = self._is_youtube_channel_result(result)
+                            is_playlist = self._is_youtube_playlist_result(result)
                             raw_title = result.get("title", "Untitled")
                             if is_channel:
                                 raw_title = f"[CHANNEL] {raw_title}"
+                            elif is_playlist:
+                                raw_title = f"[PLAYLIST] {raw_title}"
                             display_title = self._truncate(
                                 raw_title, title_w
                             ).ljust(title_w)
-                            row_attr = BOLD if is_channel else N
+                            row_attr = BOLD if (is_channel or is_playlist) else N
                             cells = [
                                 (num_x, num_w, str(idx + 1).rjust(num_w), row_attr),
                                 (title_x, title_w, display_title, row_attr),
@@ -8130,13 +8563,19 @@ class Player:
                                 views = (
                                     "channel"
                                     if is_channel
-                                    else self._fmt_yt_count(result.get("views"))
+                                    else (
+                                        f"{result.get('count')} tracks"
+                                        if is_playlist and result.get("count")
+                                        else "playlist" if is_playlist
+                                        else self._fmt_yt_count(result.get("views"))
+                                    )
                                 ).rjust(views_w)
                                 cells.append((views_x, views_w, views, row_attr))
                             if likes_w:
                                 likes = (
                                     "open"
                                     if is_channel
+                                    else "download" if is_playlist
                                     else self._fmt_yt_count(result.get("likes"))
                                 ).rjust(likes_w)
                                 cells.append((likes_x, likes_w, likes, row_attr))
@@ -8664,6 +9103,8 @@ class Player:
         self._clear_pending_play_incs()
         self._pending_youtube_result = None
         self._pending_youtube_error = None
+        self._pending_youtube_playlist_result = None
+        self._pending_youtube_playlist_error = None
         self._pending_preview_cleanup = False
         self.current = "None"
         self._song_len_ms = 0
@@ -8679,6 +9120,9 @@ class Player:
         if self._youtube_download_proc is not None:
             self._terminate_proc(self._youtube_download_proc)
             self._youtube_download_proc = None
+        if self._youtube_playlist_proc is not None:
+            self._terminate_proc(self._youtube_playlist_proc)
+            self._youtube_playlist_proc = None
         try:
             pygame.mixer.music.stop()
         except Exception:
@@ -9229,7 +9673,7 @@ if TEXTUAL_AVAILABLE:
         """
 
         HELP_ITEMS = (
-            ("Click / Enter", "Play an MP3 or preview a YouTube result"),
+            ("Click / Enter", "Play an MP3, preview a video, or download a YouTube playlist"),
             ("Space", "Pause or resume"),
             ("Progress bar", "Click to seek"),
             ("Shift-click", "Select a range of MP3s"),
@@ -10480,9 +10924,12 @@ if TEXTUAL_AVAILABLE:
                     row_signatures = getattr(table, "_music_row_signatures", {})
                     for index, result in enumerate(p.youtube_results, 1):
                         is_channel = p._is_youtube_channel_result(result)
+                        is_playlist = p._is_youtube_playlist_result(result)
                         title = str(result.get("title") or "Untitled")
                         if is_channel:
                             title = f"[CHANNEL] {title}"
+                        elif is_playlist:
+                            title = f"[PLAYLIST] {title}"
                         title = p._truncate(
                             title, table.columns.get("title").width
                         )
@@ -10490,13 +10937,19 @@ if TEXTUAL_AVAILABLE:
                             str(result.get("channel") or "--"),
                             table.columns.get("channel").width,
                         )
-                        style = "bold" if is_channel else ""
+                        style = "bold" if (is_channel or is_playlist) else ""
                         view_text = (
                             "channel" if is_channel
-                            else p._fmt_yt_count(result.get("views"))
+                            else (
+                                f"{result.get('count')} tracks"
+                                if is_playlist and result.get("count")
+                                else "playlist" if is_playlist
+                                else p._fmt_yt_count(result.get("views"))
+                            )
                         )
                         like_text = (
                             "open" if is_channel
+                            else "download" if is_playlist
                             else p._fmt_yt_count(result.get("likes"))
                         )
                         signature = (
@@ -10660,6 +11113,10 @@ if TEXTUAL_AVAILABLE:
                 p.status_msg = "No YouTube result to download"
                 self.refresh_ui()
                 return
+            if p._is_youtube_playlist_result(result):
+                p._start_youtube_playlist_download(result)
+                self.refresh_ui(rebuild_table=True)
+                return
             suggested_name = p._clean_mp3_basename(
                 str(result.get("title") or "Untitled")
             )
@@ -10779,6 +11236,8 @@ if TEXTUAL_AVAILABLE:
                     return
                 if self.player._is_youtube_channel_result(result):
                     self.player._open_youtube_channel(result)
+                elif self.player._is_youtube_playlist_result(result):
+                    self.player._start_youtube_playlist_download(result)
                 else:
                     self.player._start_youtube_preview(result)
                 self.refresh_ui(rebuild_table=True)
