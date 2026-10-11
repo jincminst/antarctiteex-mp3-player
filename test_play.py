@@ -1390,10 +1390,10 @@ class PureHelperTests(unittest.TestCase):
             ],
         )
 
-    def test_youtube_playlist_queue_starts_only_one_download(self):
+    def test_youtube_playlist_queue_starts_only_one_temporary_preview(self):
         player = bare_player()
         player._youtube_playlist_loading = False
-        player._youtube_download_loading = False
+        player._youtube_loading = False
         player._youtube_playlist_queue = play.deque([
             {"id": "one", "title": "First", "kind": "video"},
             {"id": "two", "title": "Second", "kind": "video"},
@@ -1402,15 +1402,14 @@ class PureHelperTests(unittest.TestCase):
         player._youtube_playlist_completed = 0
         player._youtube_playlist_failed = 0
         player.status_msg = ""
-        player._start_youtube_download = mock.Mock(return_value=True)
+        player._start_youtube_preview = mock.Mock(return_value=True)
 
         started = player._start_next_youtube_playlist_item()
 
         self.assertTrue(started)
         self.assertEqual(len(player._youtube_playlist_queue), 1)
-        player._start_youtube_download.assert_called_once_with(
+        player._start_youtube_preview.assert_called_once_with(
             {"id": "one", "title": "First", "kind": "video"},
-            save_name="First",
             playlist_item=True,
         )
 

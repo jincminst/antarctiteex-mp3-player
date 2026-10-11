@@ -17,7 +17,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Library Sorting by Name, Play Time, Plays, Duration, or Last Played
 - YouTube Video, Channel, and Playlist Search and Preview
 - YouTube Audio Downloads with Pre-Save Renaming and Live Progress
-- Sequential YouTube Playlist Downloads with First-Track Autoplay
+- Sequential YouTube Playlist Previews with Automatic Temporary-File Cleanup
 - YouTube Sorting by Title, Channel, Views, or Likes
 - Apple Music Radio with an Upward-Opening Station Menu (macOS)
 - Play, Pause, Seek, and Volume Controls
