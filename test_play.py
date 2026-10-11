@@ -2134,6 +2134,26 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(metadata["artist"], "21P")
         self.assertEqual(metadata["artist_hint"], "Twenty One Pilots")
 
+    def test_lyrics_metadata_probe_reads_local_duration(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/music"
+        player.playlist_tags = {}
+        probe = mock.Mock(stdout=json.dumps({
+            "format": {
+                "duration": "201.75",
+                "tags": {"artist": "Artist", "title": "Song"},
+            }
+        }))
+        with (
+            mock.patch.object(play.shutil, "which", return_value="/usr/bin/ffprobe"),
+            mock.patch.object(play.os.path, "exists", return_value=True),
+            mock.patch.object(play.subprocess, "run", return_value=probe) as run,
+        ):
+            metadata = player._read_audio_lyrics_metadata("Artist - Song")
+
+        self.assertEqual(metadata["duration_ms"], 201_750)
+        self.assertIn("format=duration:format_tags", run.call_args.args[0])
+
     def test_playlist_artist_hint_is_used_for_lyrics_query(self):
         player = play.Player.__new__(play.Player)
         search = {"response": {"hits": [{"result": {
@@ -2212,6 +2232,14 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(score("vampire Remix", "vampire"), 0)
         self.assertEqual(score("vampire diaries", "vampire"), 0)
         self.assertEqual(score("all-american bitch", "all american b-tch"), 100)
+
+    def test_lyrics_duration_comparison_allows_padding_but_rejects_versions(self):
+        matches = play.Player._lyrics_duration_matches
+
+        self.assertTrue(matches({"duration": 202}, 204))
+        self.assertTrue(matches({}, 204))
+        self.assertFalse(matches({"duration": 242}, 204))
+        self.assertTrue(matches({"duration_ms": 202_000}, 204))
 
     def test_genius_retries_censored_title_with_verified_artist(self):
         player = play.Player.__new__(play.Player)
@@ -2459,6 +2487,26 @@ class LyricsTests(unittest.TestCase):
                 "artist": "21P", "artist_tag": "21P",
                 "title": "Stressed Out", "album": "",
             })
+        self.assertIsNone(result)
+
+    def test_lrclib_rejects_wrong_version_duration(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "Artist - Example"
+        long_version = {
+            "trackName": "Example", "artistName": "Artist",
+            "duration": 280, "plainLyrics": "Wrong version",
+        }
+        with (
+            mock.patch.object(player, "_cached_duration_ms", return_value=200_000),
+            mock.patch.object(
+                player, "_fetch_json",
+                side_effect=[long_version, [long_version], [long_version]],
+            ),
+        ):
+            result = player._fetch_lrclib_lyrics({
+                "artist": "Artist", "title": "Example", "album": "",
+            })
+
         self.assertIsNone(result)
 
     def test_lrclib_retries_after_http_503_and_matches_censored_title(self):

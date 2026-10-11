@@ -187,7 +187,7 @@ LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
-LYRICS_CACHE_VERSION = 4
+LYRICS_CACHE_VERSION = 5
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
 _SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
@@ -2272,6 +2272,36 @@ class Player:
         return 0
 
     @staticmethod
+    def _lyrics_candidate_duration_seconds(candidate):
+        """Read a provider candidate's duration without assuming one schema."""
+        if not isinstance(candidate, dict):
+            return 0.0
+        try:
+            duration = float(
+                candidate.get("duration")
+                or candidate.get("duration_seconds")
+                or 0
+            )
+            if duration <= 0 and candidate.get("duration_ms"):
+                duration = float(candidate["duration_ms"]) / 1000
+            return duration if duration > 0 else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    @classmethod
+    def _lyrics_duration_matches(cls, candidate, target_seconds):
+        """Reject a known duration that clearly belongs to another recording."""
+        candidate_seconds = cls._lyrics_candidate_duration_seconds(candidate)
+        try:
+            target_seconds = float(target_seconds or 0)
+        except (TypeError, ValueError, OverflowError):
+            target_seconds = 0.0
+        if candidate_seconds <= 0 or target_seconds <= 0:
+            return True
+        tolerance = max(4.0, target_seconds * 0.03)
+        return abs(candidate_seconds - target_seconds) <= tolerance
+
+    @staticmethod
     def _clean_lyrics_text(value):
         """Normalize provider text while retaining its section headings."""
         text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -2335,6 +2365,7 @@ class Player:
             "title": title,
             "album": "",
             "lyrics": "",
+            "duration_ms": 0,
         }
         if metadata["artist_tag"]:
             metadata["artist_hint"] = self._playlist_artist_for_tag(
@@ -2346,7 +2377,8 @@ class Player:
         try:
             proc = subprocess.run(
                 [
-                    "ffprobe", "-v", "error", "-show_entries", "format_tags",
+                    "ffprobe", "-v", "error", "-show_entries",
+                    "format=duration:format_tags",
                     "-of", "json", path,
                 ],
                 stdout=subprocess.PIPE,
@@ -2356,7 +2388,14 @@ class Player:
                 check=False,
             )
             payload = json.loads(proc.stdout or "{}")
-            tags = payload.get("format", {}).get("tags", {})
+            audio_format = payload.get("format", {})
+            try:
+                metadata["duration_ms"] = max(
+                    0, round(float(audio_format.get("duration") or 0) * 1000)
+                )
+            except (TypeError, ValueError, OverflowError):
+                metadata["duration_ms"] = 0
+            tags = audio_format.get("tags", {})
             if not isinstance(tags, dict):
                 return metadata
             lowered = {str(key).casefold(): value for key, value in tags.items()}
@@ -2428,6 +2467,10 @@ class Player:
         known_artist = str(metadata.get("artist") or "").strip()
         artist_hint = str(metadata.get("artist_hint") or "").strip()
         title = str(metadata.get("title") or "").strip()
+        try:
+            target_seconds = float(metadata.get("duration_ms") or 0) / 1000
+        except (TypeError, ValueError, OverflowError):
+            target_seconds = 0
         if not title or not (tag or known_artist or artist_hint):
             return None
         if tag and not artist_hint and known_artist.casefold() == tag.casefold():
@@ -2486,9 +2529,14 @@ class Player:
                         artist_exact or artist_hint_match or artist_tag_match
                     ):
                         continue
+                    if not self._lyrics_duration_matches(result, target_seconds):
+                        continue
                     score = title_score + (
                         50 if artist_exact or artist_hint_match else 35
                     )
+                    candidate_seconds = self._lyrics_candidate_duration_seconds(result)
+                    if candidate_seconds and target_seconds:
+                        score += max(0, 12 - abs(candidate_seconds - target_seconds))
                     previous = candidates.get(page_url)
                     if previous is None or score > previous[0]:
                         candidates[page_url] = (score, result)
@@ -2512,7 +2560,11 @@ class Player:
                     candidate_title = str(result.get("title") or result.get("full_title") or "")
                     page_url = str(result.get("url") or "").strip()
                     title_score = self._genius_title_score(candidate_title, title)
-                    if page_url and title_score and self._artist_matches_tag(artist, tag):
+                    if (page_url and title_score
+                            and self._artist_matches_tag(artist, tag)
+                            and self._lyrics_duration_matches(
+                                result, target_seconds
+                            )):
                         candidates[page_url] = (title_score + 35, result)
                 if candidates:
                     break
@@ -2562,9 +2614,15 @@ class Player:
         title = metadata.get("title", "").strip()
         if not title:
             return None
-        duration_ms = self._cached_duration_ms(
-            metadata.get("library_name", self.lyrics_song)
-        )
+        try:
+            duration_ms = int(metadata.get("duration_ms") or 0)
+        except (TypeError, ValueError, OverflowError):
+            duration_ms = 0
+        if duration_ms <= 0:
+            duration_ms = self._cached_duration_ms(
+                metadata.get("library_name", self.lyrics_song)
+            )
+        target_seconds = duration_ms / 1000 if duration_ms > 0 else 0
         result = None
         last_error = None
         params = {"track_name": title}
@@ -2604,6 +2662,7 @@ class Player:
             not isinstance(result, dict)
             or not self._genius_title_score(result.get("trackName", ""), title)
             or not artist_matches(result)
+            or not self._lyrics_duration_matches(result, target_seconds)
         ):
             result = None
         if result is None:
@@ -2628,6 +2687,7 @@ class Player:
                     if any(
                         self._genius_title_score(item.get("trackName", ""), title)
                         and artist_matches(item)
+                        and self._lyrics_duration_matches(item, target_seconds)
                         for item in results
                     ):
                         break
@@ -2639,6 +2699,7 @@ class Player:
                 item for item in results
                 if isinstance(item, dict)
                 and self._genius_title_score(item.get("trackName", ""), title)
+                and self._lyrics_duration_matches(item, target_seconds)
             ]
             if not candidates:
                 return None
@@ -2647,12 +2708,14 @@ class Player:
                 candidates = matched_artist
                 if not candidates:
                     return None
-            if duration_ms > 0:
-                target_seconds = duration_ms / 1000
+            if target_seconds > 0:
                 candidates.sort(
-                    key=lambda item: abs(
-                        float(item.get("duration", target_seconds) or target_seconds)
-                        - target_seconds
+                    key=lambda item: (
+                        not bool(self._lyrics_candidate_duration_seconds(item)),
+                        abs(
+                            self._lyrics_candidate_duration_seconds(item)
+                            - target_seconds
+                        ),
                     )
                 )
             result = candidates[0]
