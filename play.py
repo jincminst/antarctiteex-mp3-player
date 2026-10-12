@@ -615,6 +615,7 @@ class Player:
         self._play_inc_lock = threading.Lock()
         self._pending_shuffle_next = None
         self._pending_media_toggle = False
+        self._pending_media_commands = deque()
         self._last_media_button_at = 0.0
         self._media_button_lock = threading.Lock()
         self._last_volume_apply_at = 0.0
@@ -679,6 +680,7 @@ class Player:
         self._paused_by_lock = False
         self._paused_by_speaker_safety = False
         self._media_key_proc = None
+        self._media_key_helper_path = ""
         self.non_speaker_mode = True
         self.show_tags = settings.get("show_tags", True) is not False
         self._saved_session = saved_session
@@ -1383,6 +1385,10 @@ class Player:
                     try:
                         if key == keyboard.Key.media_play_pause:
                             self._queue_media_button_toggle()
+                        elif key == getattr(keyboard.Key, "media_next", None):
+                            self._queue_media_button_command("NEXT")
+                        elif key == getattr(keyboard.Key, "media_previous", None):
+                            self._queue_media_button_command("PREVIOUS")
                     except Exception:
                         pass
 
@@ -1395,28 +1401,158 @@ class Player:
 
     def _queue_media_button_toggle(self):
         """Queue one toggle while deduplicating the same hardware press."""
+        return self._queue_media_button_command("TOGGLE")
+
+    def _queue_media_button_command(self, command):
+        """Queue a remote transport command, deduplicating dual macOS paths."""
+        command = str(command or "").strip().upper()
+        if command not in {"TOGGLE", "PLAY", "PAUSE", "NEXT", "PREVIOUS"}:
+            return False
         now = time.monotonic()
+        command_group = (
+            "PLAYBACK" if command in {"TOGGLE", "PLAY", "PAUSE"} else command
+        )
         with self._media_button_lock:
-            if now - self._last_media_button_at < 0.35:
+            if (
+                command_group == getattr(self, "_last_media_button_command", "")
+                and now - self._last_media_button_at < 0.35
+            ):
                 return False
             self._last_media_button_at = now
-            self._pending_media_toggle = True
+            self._last_media_button_command = command_group
+            if not hasattr(self, "_pending_media_commands"):
+                self._pending_media_commands = deque()
+            self._pending_media_commands.append(command)
         self._wake_ui()
         return True
 
+    @staticmethod
+    def _macos_media_key_swift_source():
+        """Return the native helper that owns headset and system media keys."""
+        return r'''import Cocoa
+import MediaPlayer
+
+let commandCenter = MPRemoteCommandCenter.shared()
+let infoCenter = MPNowPlayingInfoCenter.default()
+let commands: [MPRemoteCommand] = [
+    commandCenter.togglePlayPauseCommand,
+    commandCenter.playCommand,
+    commandCenter.pauseCommand,
+    commandCenter.nextTrackCommand,
+    commandCenter.previousTrackCommand,
+]
+
+func emit(_ value: String) {
+    print(value)
+    fflush(stdout)
+}
+
+func enableCommands(_ enabled: Bool) {
+    for command in commands { command.isEnabled = enabled }
+}
+
+commandCenter.togglePlayPauseCommand.addTarget { _ in
+    emit("TOGGLE")
+    return .success
+}
+commandCenter.playCommand.addTarget { _ in
+    emit("PLAY")
+    return .success
+}
+commandCenter.pauseCommand.addTarget { _ in
+    emit("PAUSE")
+    return .success
+}
+commandCenter.nextTrackCommand.addTarget { _ in
+    emit("NEXT")
+    return .success
+}
+commandCenter.previousTrackCommand.addTarget { _ in
+    emit("PREVIOUS")
+    return .success
+}
+
+NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { event in
+    if event.subtype.rawValue == 8 {
+        let keyCode = (event.data1 & 0xFFFF0000) >> 16
+        let keyFlags = event.data1 & 0x0000FFFF
+        let keyDown = ((keyFlags & 0xFF00) >> 8) == 0xA
+        if keyDown {
+            if keyCode == 16 { emit("TOGGLE") }
+            if keyCode == 17 { emit("NEXT") }
+            if keyCode == 18 { emit("PREVIOUS") }
+        }
+    }
+}
+
+enableCommands(false)
+infoCenter.playbackState = .stopped
+emit("READY")
+
+DispatchQueue.global(qos: .userInitiated).async {
+    while let line = readLine() {
+        let pieces = line.split(separator: "\t", maxSplits: 1).map(String.init)
+        let state = pieces.first ?? "STOPPED"
+        let title = pieces.count > 1 ? pieces[1] : "antarctiteex MP3 Player"
+        DispatchQueue.main.async {
+            switch state {
+            case "PLAYING":
+                enableCommands(true)
+                infoCenter.nowPlayingInfo = [MPMediaItemPropertyTitle: title]
+                infoCenter.playbackState = .playing
+            case "PAUSED":
+                enableCommands(true)
+                infoCenter.nowPlayingInfo = [MPMediaItemPropertyTitle: title]
+                infoCenter.playbackState = .paused
+            default:
+                enableCommands(false)
+                infoCenter.nowPlayingInfo = nil
+                infoCenter.playbackState = .stopped
+            }
+        }
+    }
+}
+RunLoop.main.run()
+'''
+
+    def _sync_macos_media_state(self):
+        """Tell macOS when this player should own remote headset commands."""
+        proc = getattr(self, "_media_key_proc", None)
+        if sys.platform != "darwin" or proc is None or proc.stdin is None:
+            return False
+        current = str(self.current or "")
+        active = (
+            current not in ("", "None", "Loading...")
+            and not self.apple_radio_enabled
+        )
+        state = "PAUSED" if active and self.paused else "PLAYING" if active else "STOPPED"
+        title = re.sub(r"[\t\r\n]+", " ", current).strip()
+        try:
+            with self._media_button_lock:
+                proc.stdin.write(f"{state}\t{title}\n")
+                proc.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError, ValueError):
+            return False
+
     def _start_macos_media_key_listener(self):
         try:
-            swift_code = 'import Cocoa\nNSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { event in\n    if event.subtype.rawValue == 8 {\n        let keyCode = (event.data1 & 0xFFFF0000) >> 16\n        let keyFlags = event.data1 & 0x0000FFFF\n        let keyState = ((keyFlags & 0xFF00) >> 8) == 0xA\n        if keyCode == 16 && keyState { print("PLAYPAUSE"); fflush(stdout) }\n    }\n}\nRunLoop.main.run()\n'
+            helper = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".swift", prefix="antarctiteex-media-",
+                delete=False, encoding="utf-8",
+            )
+            helper.write(self._macos_media_key_swift_source())
+            helper.close()
+            self._media_key_helper_path = helper.name
             proc = subprocess.Popen(
-                ["swift", "-"],
+                ["swift", helper.name],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
+                bufsize=1,
             )
             self._media_key_proc = proc
-            proc.stdin.write(swift_code)
-            proc.stdin.close()
 
             def reader():
                 while self.running:
@@ -1424,14 +1560,32 @@ class Player:
                         line = proc.stdout.readline()
                         if not line:
                             break
-                        if "PLAYPAUSE" in line:
-                            self._queue_media_button_toggle()
+                        command = line.strip().upper()
+                        if command == "READY":
+                            self._sync_macos_media_state()
+                        elif command in {
+                            "TOGGLE", "PLAY", "PAUSE", "NEXT", "PREVIOUS"
+                        }:
+                            self._queue_media_button_command(command)
                     except Exception:
                         break
+                try:
+                    os.unlink(helper.name)
+                except OSError:
+                    pass
+                if self._media_key_helper_path == helper.name:
+                    self._media_key_helper_path = ""
 
             threading.Thread(target=reader, daemon=True).start()
             return True
         except Exception:
+            helper_path = getattr(self, "_media_key_helper_path", "")
+            if helper_path:
+                try:
+                    os.unlink(helper_path)
+                except OSError:
+                    pass
+                self._media_key_helper_path = ""
             return False
 
     @staticmethod
@@ -1477,6 +1631,7 @@ class Player:
             self.dirty = True
             self._needs_redraw_hdr = True
             self._needs_redraw_bar = True
+        self._sync_macos_media_state()
         self._wake_ui()
 
     def _resume_from_speaker_safety(self):
@@ -1502,6 +1657,7 @@ class Player:
             self.dirty = True
             self._needs_redraw_hdr = True
             self._needs_redraw_bar = True
+        self._sync_macos_media_state()
         self._wake_ui()
         return True
 
@@ -4003,6 +4159,7 @@ class Player:
             self._needs_redraw_hdr = True
             self._needs_redraw_bar = True
             self.dirty = True
+        self._sync_macos_media_state()
 
     def _text_field(self, field):
         if field == "search":
@@ -4246,6 +4403,7 @@ class Player:
         self._needs_redraw_lst = True
         self._needs_redraw_inp = True
         self.dirty = True
+        self._sync_macos_media_state()
         self._update_timeout()
         return True
 
@@ -4351,6 +4509,7 @@ class Player:
         self._apple_radio_last_poll = 0.0
         self.current = f"Apple Radio: {self.apple_radio_active}"
         self.play_tab = "Apple Radio"
+        self._sync_macos_media_state()
         self.status_msg = ""
         url = station.get("url", "")
         opened = False
@@ -6617,6 +6776,7 @@ class Player:
         except Exception:
             self.status_msg = "Could not play YouTube preview"
             self._cleanup_youtube_preview(stop_audio=True)
+        self._sync_macos_media_state()
         self._update_timeout()
 
     def play(self, name):
@@ -6697,6 +6857,7 @@ class Player:
             self._song_len_ms = 0
             self._current_playback_path = ""
             self._set_playback_error(name, exc)
+        self._sync_macos_media_state()
         self._update_timeout()
 
     def _play_next_shuffle(self, name):
@@ -6758,6 +6919,7 @@ class Player:
             self._song_len_ms = 0
             self._current_playback_path = ""
             self._set_playback_error(name, exc)
+        self._sync_macos_media_state()
         self._update_timeout()
 
     def _restart_current_audio(self, rewind_ms=0, target_ms=None, suppress_completion=True):
@@ -6831,6 +6993,7 @@ class Player:
         self._needs_redraw_hdr = True
         self._needs_redraw_bar = True
         self.dirty = True
+        self._sync_macos_media_state()
         self._update_timeout()
 
     def _ensure_mixer_ready(self):
@@ -6890,7 +7053,27 @@ class Player:
         self.dirty = True
         self._needs_redraw_hdr = True
         self._needs_redraw_bar = True
+        self._sync_macos_media_state()
         self._update_timeout()
+
+    def skip_track(self, direction):
+        """Play the adjacent song in the current playback playlist."""
+        if self.song_switch_locked:
+            self.status_msg = "MP3 switch lock is on"
+            self._needs_redraw_hdr = True
+            self.dirty = True
+            return False
+        pool = [name for name in self.play_pool if name in self._all_songs_set]
+        if not pool:
+            return False
+        step = 1 if direction >= 0 else -1
+        try:
+            index = pool.index(self.current)
+            target = pool[(index + step) % len(pool)]
+        except ValueError:
+            target = pool[0] if step > 0 else pool[-1]
+        self.play(target)
+        return self.current == target
 
     def _apply_volume(self, force=False):
         now = time.monotonic()
@@ -6944,6 +7127,7 @@ class Player:
             has_play_incs = bool(self._pending_play_incs)
         if not (
             self._pending_media_toggle
+            or bool(getattr(self, "_pending_media_commands", ()))
             or has_play_incs
             or self._pending_shuffle_next is not None
             or self._natural_loop_restart
@@ -7166,6 +7350,22 @@ class Player:
                 changed = True
             else:
                 shutil.rmtree(temp_dir, ignore_errors=True)
+        with self._media_button_lock:
+            media_commands = list(getattr(self, "_pending_media_commands", ()))
+            if hasattr(self, "_pending_media_commands"):
+                self._pending_media_commands.clear()
+        for command in media_commands:
+            if command == "TOGGLE":
+                self.toggle_pause()
+            elif command == "PLAY" and self.paused:
+                self.toggle_pause()
+            elif command == "PAUSE" and not self.paused:
+                self.toggle_pause()
+            elif command == "NEXT":
+                self.skip_track(1)
+            elif command == "PREVIOUS":
+                self.skip_track(-1)
+            changed = True
         if self._pending_media_toggle:
             self._pending_media_toggle = False
             if self._paused_by_lock and not self._screen_locked:
@@ -9206,9 +9406,16 @@ class Player:
         self._current_playback_path = ""
         self._play_start = 0.0
         self.paused = False
+        self._sync_macos_media_state()
         if self._media_key_proc is not None:
             self._terminate_proc(self._media_key_proc)
             self._media_key_proc = None
+        if self._media_key_helper_path:
+            try:
+                os.unlink(self._media_key_helper_path)
+            except OSError:
+                pass
+            self._media_key_helper_path = ""
         if self._find_my_log_proc is not None:
             self._terminate_proc(self._find_my_log_proc)
             self._find_my_log_proc = None
@@ -10208,7 +10415,9 @@ if TEXTUAL_AVAILABLE:
                         yield Button("−", id="vol-down")
                         yield Static("████······  40%", id="volume-label")
                         yield Button("+", id="vol-up")
+                        yield Button("◀", id="previous-track")
                         yield Button("Pause", id="play-pause")
+                        yield Button("▶", id="next-track")
                         yield Button("Mode: loop", id="mode")
                         yield Button("Back", id="youtube-back", classes="youtube-action")
                         yield Button("Stop preview", id="youtube-stop", classes="youtube-action")
@@ -10914,6 +11123,9 @@ if TEXTUAL_AVAILABLE:
             play_label = "Resume" if p.paused else "Pause"
             play_button = self.query_one("#play-pause", Button)
             play_button.display = transport_visible
+            skip_visible = p.current in p._all_songs_set
+            self.query_one("#previous-track", Button).display = skip_visible
+            self.query_one("#next-track", Button).display = skip_visible
             if str(play_button.label) != play_label:
                 play_button.label = play_label
                 play_button.refresh(layout=True)
@@ -10945,6 +11157,7 @@ if TEXTUAL_AVAILABLE:
             for selector in (
                 "#vol-down", "#vol-up", "#youtube-back", "#youtube-stop",
                 "#yt-preview", "#apple-radio", "#cancel", "#help-link",
+                "#previous-track", "#next-track",
             ):
                 self._fit_button_to_label(self.query_one(selector, Button))
             workspace = self.query_one("#workspace", Horizontal)
@@ -11425,7 +11638,9 @@ if TEXTUAL_AVAILABLE:
                 self.refresh_ui(rebuild_table=True, preserve_scroll=False)
             elif button_id == "vol-down": p._adjust_volume(-1)
             elif button_id == "vol-up": p._adjust_volume(1)
+            elif button_id == "previous-track": p.skip_track(-1)
             elif button_id == "play-pause": p.toggle_pause()
+            elif button_id == "next-track": p.skip_track(1)
             elif button_id == "mode":
                 if p.youtube_preview_enabled: self.begin_youtube_download()
                 else: p._switch_play_mode()

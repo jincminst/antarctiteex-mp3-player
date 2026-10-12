@@ -964,6 +964,47 @@ class PureHelperTests(unittest.TestCase):
         self.assertFalse(player._screen_locked)
         self.assertTrue(player._pending_media_toggle)
 
+    def test_previous_and_next_wrap_inside_playing_playlist(self):
+        player = bare_player()
+        player.song_switch_locked = False
+        player.play_pool = ["one", "two", "three"]
+        player._all_songs_set = set(player.play_pool)
+        player.current = "two"
+
+        def select(name):
+            player.current = name
+
+        player.play = mock.Mock(side_effect=select)
+        self.assertTrue(player.skip_track(1))
+        self.assertEqual(player.current, "three")
+        self.assertTrue(player.skip_track(1))
+        self.assertEqual(player.current, "one")
+        self.assertTrue(player.skip_track(-1))
+        self.assertEqual(player.current, "three")
+
+    def test_macos_media_helper_registers_headset_transport_commands(self):
+        source = play.Player._macos_media_key_swift_source()
+
+        self.assertIn("MPRemoteCommandCenter.shared()", source)
+        self.assertIn("togglePlayPauseCommand.addTarget", source)
+        self.assertIn("nextTrackCommand.addTarget", source)
+        self.assertIn("previousTrackCommand.addTarget", source)
+        self.assertIn('emit("READY")', source)
+
+    def test_dual_macos_paths_do_not_toggle_a_headset_click_twice(self):
+        player = bare_player()
+        player._media_button_lock = play.threading.Lock()
+        player._pending_media_commands = play.deque()
+        player._last_media_button_at = 0.0
+        player._wake_ui = mock.Mock()
+
+        with mock.patch.object(play.time, "monotonic", side_effect=[10.0, 10.1, 10.5]):
+            self.assertTrue(player._queue_media_button_command("TOGGLE"))
+            self.assertFalse(player._queue_media_button_command("PAUSE"))
+            self.assertTrue(player._queue_media_button_command("NEXT"))
+
+        self.assertEqual(list(player._pending_media_commands), ["TOGGLE", "NEXT"])
+
     def test_selection_shift_range_and_clear(self):
         player = bare_player()
         player.songs = ["a", "b", "c", "d"]
