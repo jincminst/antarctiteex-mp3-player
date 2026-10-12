@@ -1462,6 +1462,7 @@ class PureHelperTests(unittest.TestCase):
         player = bare_player()
         player._youtube_playlist_loading = False
         player._youtube_loading = False
+        player._youtube_playlist_history = []
         player._youtube_playlist_queue = play.deque([
             {"id": "one", "title": "First", "kind": "video"},
             {"id": "two", "title": "Second", "kind": "video"},
@@ -1479,6 +1480,44 @@ class PureHelperTests(unittest.TestCase):
         player._start_youtube_preview.assert_called_once_with(
             {"id": "one", "title": "First", "kind": "video"},
             playlist_item=True,
+        )
+        self.assertEqual(
+            [item["title"] for item in player._youtube_playlist_history],
+            ["First"],
+        )
+
+    def test_youtube_playlist_previous_and_next_preserve_queue_order(self):
+        player = bare_player()
+        first = {"id": "one", "title": "First", "kind": "video"}
+        second = {"id": "two", "title": "Second", "kind": "video"}
+        third = {"id": "three", "title": "Third", "kind": "video"}
+        player._youtube_playlist_loading = False
+        player._youtube_loading = False
+        player._youtube_playlist_total = 3
+        player._youtube_playlist_history = [first, second]
+        player._youtube_playlist_queue = play.deque([third])
+        player._youtube_request_id = 4
+        player._youtube_preview_proc = None
+        player._pending_youtube_result = None
+        player._pending_youtube_error = None
+        player._pending_preview_cleanup = False
+        player._terminate_proc = mock.Mock()
+        player._cleanup_youtube_preview = mock.Mock()
+        player._start_youtube_preview = mock.Mock(return_value=True)
+
+        self.assertTrue(player._navigate_youtube_playlist(-1))
+        self.assertEqual(player._youtube_playlist_history, [first])
+        self.assertEqual(list(player._youtube_playlist_queue), [second, third])
+        player._start_youtube_preview.assert_called_once_with(
+            first, playlist_item=True
+        )
+
+        player._start_youtube_preview.reset_mock()
+        self.assertTrue(player._navigate_youtube_playlist(1))
+        self.assertEqual(player._youtube_playlist_history, [first, second])
+        self.assertEqual(list(player._youtube_playlist_queue), [third])
+        player._start_youtube_preview.assert_called_once_with(
+            second, playlist_item=True
         )
 
     def test_youtube_result_extraction_deduplicates_and_skips_invalid_rows(self):
@@ -2666,10 +2705,9 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         app.refresh_ui(rebuild_table=True)
                     update_cell.assert_not_called()
 
-    async def test_track_skip_buttons_only_show_for_playlist_playback(self):
+    async def test_track_skip_buttons_only_show_for_youtube_playlist_preview(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "First.mp3").touch()
-            Path(folder, "Second.mp3").touch()
             with mock.patch.object(play.Player, "start_background_services"):
                 app = play.MusicApp(folder)
                 async with app.run_test(size=(100, 24)) as pilot:
@@ -2681,24 +2719,31 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(app.query_one("#previous-track").display)
                     self.assertFalse(app.query_one("#next-track").display)
 
-                    player.playlists["Mix"] = ["First", "Second"]
+                    player.playlists["Mix"] = ["First"]
                     player._rebuild_tab_names("Mix")
                     player.active_tab = player.tab_names.index("Mix")
-                    # Viewing a playlist controls button visibility even when
-                    # no track has been started from it yet.
-                    player.play_tab = "All"
-                    player.current = "None"
+                    app.refresh_ui()
+                    await pilot.pause()
+                    self.assertFalse(app.query_one("#previous-track").display)
+                    self.assertFalse(app.query_one("#next-track").display)
+
+                    player.youtube_preview_enabled = True
+                    player._youtube_playlist_total = 3
                     app.refresh_ui()
                     await pilot.pause()
                     self.assertTrue(app.query_one("#previous-track").display)
                     self.assertTrue(app.query_one("#next-track").display)
-                    with mock.patch.object(player, "skip_track") as skip:
+                    with mock.patch.object(
+                        player, "_navigate_youtube_playlist"
+                    ) as navigate:
                         await pilot.click("#next-track")
-                    self.assertEqual(player.play_tab, "Mix")
-                    self.assertEqual(player.play_pool, ["First", "Second"])
-                    skip.assert_called_once_with(1)
+                        await pilot.click("#previous-track")
+                    self.assertEqual(
+                        navigate.call_args_list,
+                        [mock.call(1), mock.call(-1)],
+                    )
 
-                    player.youtube_preview_enabled = True
+                    player._youtube_playlist_total = 0
                     app.refresh_ui()
                     await pilot.pause()
                     self.assertFalse(app.query_one("#previous-track").display)

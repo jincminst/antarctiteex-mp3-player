@@ -2127,6 +2127,7 @@ class OnlineMixin:
         title = str(result.get("title") or "YouTube playlist").strip()
         self._youtube_playlist_loading = True
         self._youtube_playlist_queue = deque()
+        self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
         self._youtube_playlist_completed = 0
         self._youtube_playlist_failed = 0
@@ -2174,10 +2175,43 @@ class OnlineMixin:
             self._finish_youtube_playlist_preview()
             return False
         result = self._youtube_playlist_queue.popleft()
-        position = self._youtube_playlist_completed + self._youtube_playlist_failed + 1
+        self._youtube_playlist_history.append(result)
+        position = len(self._youtube_playlist_history)
         title = str(result.get("title") or "Untitled").strip()
         self.status_msg = f"Preparing {position}/{self._youtube_playlist_total}: {title}"
         return self._start_youtube_preview(result, playlist_item=True)
+
+    def _navigate_youtube_playlist(self, direction):
+        """Move within the active temporary YouTube playlist preview."""
+        if self._youtube_playlist_total <= 0:
+            return False
+        history = self._youtube_playlist_history
+        if direction < 0:
+            if len(history) < 2:
+                self.status_msg = "Already at the first playlist video"
+                self.dirty = True
+                return False
+            current = history.pop()
+            previous = history.pop()
+            self._youtube_playlist_queue.appendleft(current)
+            self._youtube_playlist_queue.appendleft(previous)
+        elif not self._youtube_playlist_queue:
+            self.status_msg = "Already at the last playlist video"
+            self.dirty = True
+            return False
+
+        # Invalidate an in-flight yt-dlp worker before deleting the current
+        # temporary audio. The selected neighboring item then starts through
+        # the same one-at-a-time queue used by natural playlist progression.
+        self._youtube_request_id += 1
+        self._youtube_loading = False
+        self._terminate_proc(self._youtube_preview_proc)
+        self._youtube_preview_proc = None
+        self._pending_youtube_result = None
+        self._pending_youtube_error = None
+        self._pending_preview_cleanup = False
+        self._cleanup_youtube_preview(stop_audio=True)
+        return self._start_next_youtube_playlist_item()
 
     def _finish_youtube_playlist_preview(self):
         total = self._youtube_playlist_total
@@ -2186,6 +2220,7 @@ class OnlineMixin:
         if total <= 0:
             return
         self._youtube_playlist_queue = deque()
+        self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
         self._youtube_playlist_loading = False
         self._youtube_playlist_title = ""
@@ -2212,6 +2247,7 @@ class OnlineMixin:
         self._youtube_playlist_proc = None
         self._youtube_playlist_loading = False
         self._youtube_playlist_queue = deque()
+        self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
         self._youtube_playlist_title = ""
         self._pending_youtube_playlist_result = None
@@ -2416,11 +2452,7 @@ class OnlineMixin:
                 raise RuntimeError("preview audio did not start")
             self.current = f"YouTube: {title}"
             if self._youtube_playlist_total > 0:
-                position = (
-                    self._youtube_playlist_completed
-                    + self._youtube_playlist_failed
-                    + 1
-                )
+                position = len(self._youtube_playlist_history)
                 self.status_msg = (
                     f"Playlist preview {position}/{self._youtube_playlist_total}; "
                     "temporary audio will be deleted when it ends"

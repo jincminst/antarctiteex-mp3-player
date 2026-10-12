@@ -222,6 +222,7 @@ class Player(
         self._youtube_playlist_loading = False
         self._youtube_playlist_request_id = 0
         self._youtube_playlist_queue = deque()
+        self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
         self._youtube_playlist_completed = 0
         self._youtube_playlist_failed = 0

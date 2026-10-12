@@ -1542,12 +1542,9 @@ if TEXTUAL_AVAILABLE:
             play_label = "Resume" if p.paused else "Pause"
             play_button = self.query_one("#play-pause", Button)
             play_button.display = transport_visible
-            viewed_playlist = p._current_tab_name()
             skip_visible = (
-                viewed_playlist in p.playlists
-                and bool(p._playlist_song_names(viewed_playlist))
-                and not p.youtube_preview_enabled
-                and not p.apple_radio_enabled
+                p.youtube_preview_enabled
+                and p._youtube_playlist_total > 0
             )
             previous_button = self.query_one("#previous-track", Button)
             next_button = self.query_one("#next-track", Button)
@@ -2067,12 +2064,10 @@ if TEXTUAL_AVAILABLE:
             elif button_id == "vol-down": p._adjust_volume(-1)
             elif button_id == "vol-up": p._adjust_volume(1)
             elif button_id == "previous-track":
-                p._use_viewed_playlist_for_playback()
-                p.skip_track(-1)
+                p._navigate_youtube_playlist(-1)
             elif button_id == "play-pause": p.toggle_pause()
             elif button_id == "next-track":
-                p._use_viewed_playlist_for_playback()
-                p.skip_track(1)
+                p._navigate_youtube_playlist(1)
             elif button_id == "mode":
                 if p.youtube_preview_enabled: self.begin_youtube_download()
                 else: p._switch_play_mode()

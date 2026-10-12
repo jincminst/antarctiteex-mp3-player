@@ -13,7 +13,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Drag-and-Drop Playlist Management
 - Shift-Click Range Selection and Multi-Song Actions
 - Loop and Weighted Shuffle Playback
-- Previous and Next Controls for Playlist Playback
+- Previous and Next Controls for YouTube Playlist Previews
 - Play Count, Listening Time, Duration, and Last-Played Tracking
 - Library Sorting by Name, Play Time, Plays, Duration, or Last Played
 - YouTube Video, Channel, and Playlist Search and Preview
