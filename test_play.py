@@ -2733,6 +2733,13 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     self.assertTrue(app.query_one("#previous-track").display)
                     self.assertTrue(app.query_one("#next-track").display)
+                    await pilot.resize_terminal(80, 24)
+                    await pilot.pause()
+                    controls = app.query_one("#playback-controls").region
+                    for selector in ("#previous-track", "#next-track"):
+                        button = app.query_one(selector)
+                        self.assertEqual(button.region.width, 5)
+                        self.assertLessEqual(button.region.right, controls.right)
                     with mock.patch.object(
                         player, "_navigate_youtube_playlist"
                     ) as navigate:

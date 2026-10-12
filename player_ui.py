@@ -1550,12 +1550,17 @@ if TEXTUAL_AVAILABLE:
             next_button = self.query_one("#next-track", Button)
             previous_button.display = skip_visible
             next_button.display = skip_visible
-            self._fit_button_to_label(previous_button, frame_cells=2)
-            self._fit_button_to_label(next_button, frame_cells=2)
+            # Arrow-only Textual buttons need a little horizontal breathing
+            # room. At three cells the two border cells crowd the glyph and
+            # some terminals render it as if it were touching the wall.
+            self._fit_button_to_label(previous_button, frame_cells=4)
+            self._fit_button_to_label(next_button, frame_cells=4)
             if str(play_button.label) != play_label:
                 play_button.label = play_label
                 play_button.refresh(layout=True)
-            self._fit_button_to_label(play_button)
+            # The word label remains legible with only its two border cells;
+            # keeping this compact leaves room for both full arrow buttons.
+            self._fit_button_to_label(play_button, frame_cells=2)
             level = min(10, max(0, round(p.vol * 10)))
             volume_text = (
                 f"{'█' * level}{'·' * (10 - level)}  {round(p.vol * 100):>3}%"
