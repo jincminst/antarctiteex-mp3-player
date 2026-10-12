@@ -1544,8 +1544,8 @@ if TEXTUAL_AVAILABLE:
             play_button.display = transport_visible
             viewed_playlist = p._current_tab_name()
             skip_visible = (
-                p.current in p._all_songs_set
-                and viewed_playlist in p.playlists
+                viewed_playlist in p.playlists
+                and bool(p._playlist_song_names(viewed_playlist))
                 and not p.youtube_preview_enabled
                 and not p.apple_radio_enabled
             )

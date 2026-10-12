@@ -2685,8 +2685,9 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     player._rebuild_tab_names("Mix")
                     player.active_tab = player.tab_names.index("Mix")
                     # Viewing a playlist controls button visibility even when
-                    # the current track originally came from All.
+                    # no track has been started from it yet.
                     player.play_tab = "All"
+                    player.current = "None"
                     app.refresh_ui()
                     await pilot.pause()
                     self.assertTrue(app.query_one("#previous-track").display)
