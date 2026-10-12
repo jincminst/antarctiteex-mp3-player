@@ -22,4 +22,16 @@ antarctiteex = "play:main"
 mp3-player = "play:main"
 
 [tool.setuptools]
-py-modules = ["play"]
+py-modules = [
+    "play",
+    "player_audio",
+    "player_common",
+    "player_data",
+    "player_engine",
+    "player_legacy_ui",
+    "player_library",
+    "player_online",
+    "player_runtime",
+    "player_system",
+    "player_ui",
+]

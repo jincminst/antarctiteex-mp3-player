@@ -13,6 +13,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Drag-and-Drop Playlist Management
 - Shift-Click Range Selection and Multi-Song Actions
 - Loop and Weighted Shuffle Playback
+- Previous and Next Controls for Playlist Playback
 - Play Count, Listening Time, Duration, and Last-Played Tracking
 - Library Sorting by Name, Play Time, Plays, Duration, or Last Played
 - YouTube Video, Channel, and Playlist Search and Preview
@@ -149,6 +150,20 @@ and passes its absolute path to yt-dlp. The package installs yt-dlp's matching
 EJS scripts through the `yt-dlp[default]` dependency group.
 
 ## Development
+
+The source is split by responsibility so changes stay localized:
+
+- `play.py`: public imports and command-line entry point
+- `player_engine.py`: player construction and service startup
+- `player_library.py`: playlists, selection, sorting, and shuffle weights
+- `player_data.py`: cache, metadata, and lyrics lookup
+- `player_audio.py`: duration, volume analysis, and listening history
+- `player_system.py`: macOS media keys and output safety
+- `player_online.py`: YouTube and Apple Music radio
+- `player_runtime.py`: playback, pending work, drawing, and legacy input
+- `player_ui.py`: Textual widgets, screens, layout, and events
+- `player_common.py`: shared imports, constants, and lyrics rendering helpers
+- `player_legacy_ui.py`: remaining curses-compatible layout and dialog helpers
 
 Run the test suite with:
 

@@ -81,15 +81,18 @@ class FunctionInventoryTests(unittest.TestCase):
         self.assertTrue(player._safe.call_args_list[-1].args[3].startswith("└"))
 
     def test_every_function_compiles_and_player_methods_are_callable(self):
-        source = Path(play.__file__).read_text()
-        tree = ast.parse(source, play.__file__)
-        functions = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
+        module_paths = [Path(play.__file__), *Path(play.__file__).parent.glob("player_*.py")]
+        functions = []
+        for module_path in module_paths:
+            source = module_path.read_text()
+            tree = ast.parse(source, module_path)
+            compile(tree, module_path, "exec")
+            functions.extend(
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
         self.assertGreater(len(functions), 190)
-        compile(tree, play.__file__, "exec")
         for name, member in inspect.getmembers(play.Player):
             if name.startswith("__") and name not in {"__init__"}:
                 continue
@@ -2662,6 +2665,33 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     ) as update_cell:
                         app.refresh_ui(rebuild_table=True)
                     update_cell.assert_not_called()
+
+    async def test_track_skip_buttons_only_show_for_playlist_playback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "First.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(100, 24)) as pilot:
+                    player = app.player
+                    player.current = "First"
+                    player.play_tab = "All"
+                    app.refresh_ui()
+                    await pilot.pause()
+                    self.assertFalse(app.query_one("#previous-track").display)
+                    self.assertFalse(app.query_one("#next-track").display)
+
+                    player.playlists["Mix"] = ["First"]
+                    player.play_tab = "Mix"
+                    app.refresh_ui()
+                    await pilot.pause()
+                    self.assertTrue(app.query_one("#previous-track").display)
+                    self.assertTrue(app.query_one("#next-track").display)
+
+                    player.youtube_preview_enabled = True
+                    app.refresh_ui()
+                    await pilot.pause()
+                    self.assertFalse(app.query_one("#previous-track").display)
+                    self.assertFalse(app.query_one("#next-track").display)
 
     async def test_idle_tick_refreshes_transport_without_rebuilding_table(self):
         with tempfile.TemporaryDirectory() as folder:
