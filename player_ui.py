@@ -1542,14 +1542,19 @@ if TEXTUAL_AVAILABLE:
             play_label = "Resume" if p.paused else "Pause"
             play_button = self.query_one("#play-pause", Button)
             play_button.display = transport_visible
+            viewed_playlist = p._current_tab_name()
             skip_visible = (
                 p.current in p._all_songs_set
-                and p.play_tab in p.playlists
+                and viewed_playlist in p.playlists
                 and not p.youtube_preview_enabled
                 and not p.apple_radio_enabled
             )
-            self.query_one("#previous-track", Button).display = skip_visible
-            self.query_one("#next-track", Button).display = skip_visible
+            previous_button = self.query_one("#previous-track", Button)
+            next_button = self.query_one("#next-track", Button)
+            previous_button.display = skip_visible
+            next_button.display = skip_visible
+            self._fit_button_to_label(previous_button, frame_cells=2)
+            self._fit_button_to_label(next_button, frame_cells=2)
             if str(play_button.label) != play_label:
                 play_button.label = play_label
                 play_button.refresh(layout=True)
@@ -1581,7 +1586,6 @@ if TEXTUAL_AVAILABLE:
             for selector in (
                 "#vol-down", "#vol-up", "#youtube-back", "#youtube-stop",
                 "#yt-preview", "#apple-radio", "#cancel", "#help-link",
-                "#previous-track", "#next-track",
             ):
                 self._fit_button_to_label(self.query_one(selector, Button))
             workspace = self.query_one("#workspace", Horizontal)
@@ -2062,9 +2066,13 @@ if TEXTUAL_AVAILABLE:
                 self.refresh_ui(rebuild_table=True, preserve_scroll=False)
             elif button_id == "vol-down": p._adjust_volume(-1)
             elif button_id == "vol-up": p._adjust_volume(1)
-            elif button_id == "previous-track": p.skip_track(-1)
+            elif button_id == "previous-track":
+                p._use_viewed_playlist_for_playback()
+                p.skip_track(-1)
             elif button_id == "play-pause": p.toggle_pause()
-            elif button_id == "next-track": p.skip_track(1)
+            elif button_id == "next-track":
+                p._use_viewed_playlist_for_playback()
+                p.skip_track(1)
             elif button_id == "mode":
                 if p.youtube_preview_enabled: self.begin_youtube_download()
                 else: p._switch_play_mode()

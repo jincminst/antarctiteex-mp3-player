@@ -2669,6 +2669,7 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_track_skip_buttons_only_show_for_playlist_playback(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "First.mp3").touch()
+            Path(folder, "Second.mp3").touch()
             with mock.patch.object(play.Player, "start_background_services"):
                 app = play.MusicApp(folder)
                 async with app.run_test(size=(100, 24)) as pilot:
@@ -2680,12 +2681,21 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(app.query_one("#previous-track").display)
                     self.assertFalse(app.query_one("#next-track").display)
 
-                    player.playlists["Mix"] = ["First"]
-                    player.play_tab = "Mix"
+                    player.playlists["Mix"] = ["First", "Second"]
+                    player._rebuild_tab_names("Mix")
+                    player.active_tab = player.tab_names.index("Mix")
+                    # Viewing a playlist controls button visibility even when
+                    # the current track originally came from All.
+                    player.play_tab = "All"
                     app.refresh_ui()
                     await pilot.pause()
                     self.assertTrue(app.query_one("#previous-track").display)
                     self.assertTrue(app.query_one("#next-track").display)
+                    with mock.patch.object(player, "skip_track") as skip:
+                        await pilot.click("#next-track")
+                    self.assertEqual(player.play_tab, "Mix")
+                    self.assertEqual(player.play_pool, ["First", "Second"])
+                    skip.assert_called_once_with(1)
 
                     player.youtube_preview_enabled = True
                     app.refresh_ui()
