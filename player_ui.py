@@ -819,6 +819,7 @@ if TEXTUAL_AVAILABLE:
             self._playlist_width = None
             self._lyrics_render_state = None
             self._playlist_sync_state = None
+            self._tick_timer = None
 
         def compose(self) -> ComposeResult:
             with Vertical(id="top"):
@@ -905,7 +906,7 @@ if TEXTUAL_AVAILABLE:
             self._configure_table_columns(False)
             self.refresh_playlists()
             self.refresh_ui(rebuild_table=True)
-            self.set_interval(TEXTUAL_TICK_S, self.tick)
+            self._tick_timer = self.set_interval(TEXTUAL_TICK_S, self.tick)
             # Start the output-safety listener now; the setup runs in a
             # background thread and does not delay the first screen paint.
             self.player.start_background_services()
@@ -1226,7 +1227,7 @@ if TEXTUAL_AVAILABLE:
                 table.refresh()
 
         def tick(self):
-            if not self.player:
+            if not self.player or not self.is_mounted:
                 return
             self.player._process_pending()
             self.player._queue_apple_radio_poll()
@@ -2210,7 +2211,11 @@ if TEXTUAL_AVAILABLE:
             self.refresh_ui(rebuild_table=True)
 
         def on_unmount(self):
+            if self._tick_timer is not None:
+                self._tick_timer.stop()
+                self._tick_timer = None
             if self.player:
+                self.player._ui_wakeup = None
                 self.player._shutdown_audio()
 
 __all__ = [name for name in globals() if not name.startswith("__")]

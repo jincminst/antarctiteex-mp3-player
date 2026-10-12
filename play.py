@@ -1,5 +1,16 @@
 """Public API and command-line entry point for antarctiteex."""
 
+import sys
+from pathlib import Path
+
+# An older editable install may know where ``play.py`` lives without having the
+# sibling modules added by a later source update in its generated import map.
+# Keep the source directory importable so the launcher can repair itself after
+# a pull/refactor instead of failing before it can start.
+_SOURCE_DIR = str(Path(__file__).resolve().parent)
+if _SOURCE_DIR not in sys.path:
+    sys.path.insert(0, _SOURCE_DIR)
+
 from player_common import *
 from player_engine import Player
 from player_ui import *
