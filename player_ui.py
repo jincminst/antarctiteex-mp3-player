@@ -699,8 +699,8 @@ if TEXTUAL_AVAILABLE:
         #controls { height: 3; align-vertical: middle; }
         #playback-controls { width: 1fr; height: 3; align-vertical: middle; }
         #playback-controls Button { min-width: 5; width: auto; height: 3; margin-right: 1; }
-        #volume-caption { width: 5; height: 3; content-align: left middle; text-style: bold; }
-        #volume-label { width: 17; height: 3; padding-right: 1; content-align: center middle; }
+        #volume-caption { width: 3; height: 3; content-align: left middle; text-style: bold; }
+        #volume-label { width: 16; height: 3; content-align: center middle; }
         #transport-row { height: 1; margin-top: 1; align-vertical: top; }
         #time-label { width: auto; min-width: 16; max-width: 42; height: 1; padding-right: 1; color: #777777; content-align: left top; }
         #progress { width: 1fr; height: 1; color: #777777; }
@@ -1227,7 +1227,14 @@ if TEXTUAL_AVAILABLE:
                 table.refresh()
 
         def tick(self):
-            if not self.player or not self.is_mounted:
+            # Textual can begin one final timer callback while the app is
+            # unmounting. is_mounted remains true briefly after the screen's
+            # children have gone, so also verify the transport still exists.
+            if (
+                not self.player
+                or not self.is_mounted
+                or len(self.query("#time-label")) == 0
+            ):
                 return
             self.player._process_pending()
             self.player._queue_apple_radio_poll()
@@ -1558,9 +1565,10 @@ if TEXTUAL_AVAILABLE:
             if str(play_button.label) != play_label:
                 play_button.label = play_label
                 play_button.refresh(layout=True)
-            # The word label remains legible with only its two border cells;
-            # keeping this compact leaves room for both full arrow buttons.
-            self._fit_button_to_label(play_button, frame_cells=2)
+            # Give Pause / Resume the same interior breathing room as the
+            # adjacent arrow buttons. Two frame cells account for the border,
+            # while the other two keep the label away from it.
+            self._fit_button_to_label(play_button, frame_cells=4)
             level = min(10, max(0, round(p.vol * 10)))
             volume_text = (
                 f"{'█' * level}{'·' * (10 - level)}  {round(p.vol * 100):>3}%"
