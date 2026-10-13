@@ -2736,6 +2736,9 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.resize_terminal(80, 24)
                     await pilot.pause()
                     controls = app.query_one("#playback-controls").region
+                    volume_label = app.query_one("#volume-label").region
+                    volume_up = app.query_one("#vol-up").region
+                    self.assertEqual(volume_up.x - volume_label.right, 1)
                     for selector in ("#previous-track", "#next-track"):
                         button = app.query_one(selector)
                         self.assertEqual(button.region.width, 5)

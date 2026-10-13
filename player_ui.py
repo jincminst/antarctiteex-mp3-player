@@ -701,6 +701,7 @@ if TEXTUAL_AVAILABLE:
         #playback-controls Button { min-width: 5; width: auto; height: 3; margin-right: 1; }
         #volume-caption { width: 3; height: 3; content-align: left middle; text-style: bold; }
         #volume-label { width: 16; height: 3; content-align: center middle; }
+        #playback-controls #vol-up { margin-left: 1; margin-right: 0; }
         #transport-row { height: 1; margin-top: 1; align-vertical: top; }
         #time-label { width: auto; min-width: 16; max-width: 42; height: 1; padding-right: 1; color: #777777; content-align: left top; }
         #progress { width: 1fr; height: 1; color: #777777; }
