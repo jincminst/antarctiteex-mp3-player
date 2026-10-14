@@ -940,10 +940,63 @@ class DataMixin:
                         "source": "Genius", "url": page_url}
         return None
 
+    def _infer_unique_lyrics_artist(self, title):
+        """Infer an artist only when exact-title Genius results all agree."""
+        title = str(title or "").strip()
+        if not title:
+            return "", 0
+        payload = self._search_genius(title)
+        artists = {}
+        for hit in self._genius_song_hits(payload):
+            result = hit.get("result", {}) if isinstance(hit, dict) else {}
+            if self._genius_title_score(result.get("title", ""), title) != 100:
+                continue
+            artist = str(
+                result.get("primary_artist", {}).get("name") or ""
+            ).strip()
+            normalized = self._normalized_lyrics_identity(artist)
+            if normalized:
+                artists.setdefault(normalized, artist)
+        if len(artists) == 1:
+            return next(iter(artists.values())), 1
+        return "", len(artists)
+
     def _fetch_preferred_lyrics(self, metadata):
         # Genius is preferred for a verified artist-tag match, but it may
         # occasionally reject automated requests. Keep LRCLIB as a reliable
         # fallback instead of turning a Genius outage into "unavailable".
+        has_artist = any(
+            str(metadata.get(key) or "").strip()
+            for key in ("artist", "artist_hint", "artist_tag")
+        )
+        if not has_artist and metadata.get("lyrics"):
+            return {
+                "text": metadata["lyrics"],
+                "source": "MP3 tags",
+                "url": "",
+            }
+        if not has_artist:
+            try:
+                inferred_artist, artist_count = self._infer_unique_lyrics_artist(
+                    metadata.get("title", "")
+                )
+            except Exception:
+                inferred_artist, artist_count = "", 0
+            if not inferred_artist:
+                if artist_count > 1:
+                    status = (
+                        "This title belongs to multiple artists, so lyrics "
+                        "were not guessed from duration alone. Add [artist "
+                        "initials] to identify this song."
+                    )
+                else:
+                    status = (
+                        "The artist could not be inferred safely. Add [artist "
+                        "initials] or restore the MP3 artist metadata."
+                    )
+                return {"status": status}
+            metadata = dict(metadata)
+            metadata["artist_hint"] = inferred_artist
         try:
             result = self._fetch_genius_lyrics(metadata)
         except Exception:
@@ -955,20 +1008,6 @@ class DataMixin:
                 "text": metadata["lyrics"],
                 "source": "MP3 tags",
                 "url": "",
-            }
-        if not any(
-            str(metadata.get(key) or "").strip()
-            for key in ("artist", "artist_hint", "artist_tag")
-        ):
-            # A title and duration identify a recording version, not an
-            # artist. Different songs can share both closely enough that
-            # choosing the nearest result produces confidently wrong lyrics.
-            return {
-                "status": (
-                    "Artist unknown, so lyrics were not guessed from title "
-                    "and duration alone. Add [artist initials] to the "
-                    "filename or restore its MP3 artist metadata."
-                )
             }
         return self._fetch_lrclib_lyrics(metadata)
 

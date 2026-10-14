@@ -2465,18 +2465,66 @@ class LyricsTests(unittest.TestCase):
         self.assertIsNone(result)
         fetch.assert_not_called()
 
-    def test_missing_artist_returns_explanation_instead_of_guessing(self):
+    def test_ambiguous_title_returns_explanation_instead_of_guessing(self):
         player = play.Player.__new__(play.Player)
         with (
-            mock.patch.object(player, "_fetch_genius_lyrics", return_value=None),
+            mock.patch.object(
+                player, "_infer_unique_lyrics_artist", return_value=("", 3)
+            ),
+            mock.patch.object(player, "_fetch_genius_lyrics") as genius,
             mock.patch.object(player, "_fetch_lrclib_lyrics") as lrclib,
         ):
             result = player._fetch_preferred_lyrics({
                 "artist": "", "title": "The Beast", "duration_ms": 230_000,
             })
 
-        self.assertIn("Artist unknown", result["status"])
+        self.assertIn("multiple artists", result["status"])
+        genius.assert_not_called()
         lrclib.assert_not_called()
+
+    def test_unique_title_infers_artist_before_lyrics_lookup(self):
+        player = play.Player.__new__(play.Player)
+        expected = {"text": "Words", "source": "Genius", "url": "url"}
+        with (
+            mock.patch.object(
+                player,
+                "_infer_unique_lyrics_artist",
+                return_value=("Known Artist", 1),
+            ),
+            mock.patch.object(
+                player, "_fetch_genius_lyrics", return_value=expected
+            ) as genius,
+            mock.patch.object(player, "_fetch_lrclib_lyrics") as lrclib,
+        ):
+            result = player._fetch_preferred_lyrics({
+                "artist": "", "title": "Distinctive Song", "duration_ms": 200_000,
+            })
+
+        self.assertIs(result, expected)
+        self.assertEqual(
+            genius.call_args.args[0]["artist_hint"], "Known Artist"
+        )
+        lrclib.assert_not_called()
+
+    def test_artist_inference_requires_all_exact_titles_to_agree(self):
+        player = play.Player.__new__(play.Player)
+        payload = {"response": {"sections": [{"type": "song", "hits": [
+            {"result": {
+                "title": "The Beast", "primary_artist": {"name": "Artist One"},
+            }},
+            {"result": {
+                "title": "The Beast", "primary_artist": {"name": "Artist Two"},
+            }},
+            {"result": {
+                "title": "The Beast Remix",
+                "primary_artist": {"name": "Ignored Artist"},
+            }},
+        ]}]}}
+        with mock.patch.object(player, "_search_genius", return_value=payload):
+            artist, count = player._infer_unique_lyrics_artist("The Beast")
+
+        self.assertEqual(artist, "")
+        self.assertEqual(count, 2)
 
     def test_embedded_lyrics_work_without_artist_identity(self):
         player = play.Player.__new__(play.Player)
