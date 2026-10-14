@@ -2450,6 +2450,48 @@ class LyricsTests(unittest.TestCase):
         self.assertIs(result, expected)
         lrclib.assert_called_once()
 
+    def test_title_and_duration_alone_do_not_select_unrelated_lyrics(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "The Beast"
+        with mock.patch.object(player, "_fetch_json") as fetch:
+            result = player._fetch_lrclib_lyrics({
+                "artist": "",
+                "artist_tag": "",
+                "title": "The Beast",
+                "duration_ms": 230_000,
+                "library_name": "The Beast",
+            })
+
+        self.assertIsNone(result)
+        fetch.assert_not_called()
+
+    def test_missing_artist_returns_explanation_instead_of_guessing(self):
+        player = play.Player.__new__(play.Player)
+        with (
+            mock.patch.object(player, "_fetch_genius_lyrics", return_value=None),
+            mock.patch.object(player, "_fetch_lrclib_lyrics") as lrclib,
+        ):
+            result = player._fetch_preferred_lyrics({
+                "artist": "", "title": "The Beast", "duration_ms": 230_000,
+            })
+
+        self.assertIn("Artist unknown", result["status"])
+        lrclib.assert_not_called()
+
+    def test_embedded_lyrics_work_without_artist_identity(self):
+        player = play.Player.__new__(play.Player)
+        with (
+            mock.patch.object(player, "_fetch_genius_lyrics", return_value=None),
+            mock.patch.object(player, "_fetch_lrclib_lyrics") as lrclib,
+        ):
+            result = player._fetch_preferred_lyrics({
+                "artist": "", "title": "Unknown", "lyrics": "Embedded words",
+            })
+
+        self.assertEqual(result["source"], "MP3 tags")
+        self.assertEqual(result["text"], "Embedded words")
+        lrclib.assert_not_called()
+
     def test_verified_genius_outranks_embedded_mp3_lyrics(self):
         player = play.Player.__new__(play.Player)
         genius = {"text": "Genius words", "source": "Genius", "url": "url"}

@@ -956,6 +956,20 @@ class DataMixin:
                 "source": "MP3 tags",
                 "url": "",
             }
+        if not any(
+            str(metadata.get(key) or "").strip()
+            for key in ("artist", "artist_hint", "artist_tag")
+        ):
+            # A title and duration identify a recording version, not an
+            # artist. Different songs can share both closely enough that
+            # choosing the nearest result produces confidently wrong lyrics.
+            return {
+                "status": (
+                    "Artist unknown, so lyrics were not guessed from title "
+                    "and duration alone. Add [artist initials] to the "
+                    "filename or restore its MP3 artist metadata."
+                )
+            }
         return self._fetch_lrclib_lyrics(metadata)
 
     def _fetch_lrclib_lyrics(self, metadata):
@@ -969,6 +983,13 @@ class DataMixin:
             artist = hint
         title = metadata.get("title", "").strip()
         if not title:
+            return None
+        artist_tag = str(
+            metadata.get("artist_tag") or self._artist_tag_from_filename(
+                metadata.get("library_name", "")
+            )
+        ).strip()
+        if not artist and not artist_tag:
             return None
         try:
             duration_ms = int(metadata.get("duration_ms") or 0)
@@ -998,12 +1019,6 @@ class DataMixin:
                     last_error = exc
             except Exception as exc:
                 last_error = exc
-        artist_tag = str(
-            metadata.get("artist_tag") or self._artist_tag_from_filename(
-                metadata.get("library_name", "")
-            )
-        ).strip()
-
         def artist_matches(item):
             found_artist = str(item.get("artistName") or "").strip()
             if artist_tag and not self._artist_matches_tag(found_artist, artist_tag):
@@ -1197,8 +1212,9 @@ class DataMixin:
             entry["lyrics_cache"] = result
             self._meta_dirty = True
         else:
-            self.lyrics_status = (
-                "Lyrics not found for this song. Check its title and artist tags."
+            self.lyrics_status = str(
+                (result or {}).get("status")
+                or "Lyrics not found for this song. Check its title and artist tags."
             )
             if error:
                 if isinstance(error, urllib.error.HTTPError):
