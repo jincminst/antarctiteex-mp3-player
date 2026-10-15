@@ -612,6 +612,42 @@ class DataMixin:
                 parts.append(part)
         return parts
 
+    @classmethod
+    def _lyrics_artist_credit_distance(cls, candidate, known):
+        """Measure extra and matching performers in a provider credit.
+
+        Genius exposes a short ``primary_artist`` as well as ``artist_names``,
+        which contains the complete recording credit.  A remix can share the
+        same title and primary artist as the original, so unfamiliar names in
+        the complete credit are stronger evidence than result order.
+        """
+        candidate_parts = {
+            cls._normalized_lyrics_identity(part)
+            for part in cls._lyrics_artist_query_parts(candidate)
+        }
+        known_parts = {
+            cls._normalized_lyrics_identity(part)
+            for part in cls._lyrics_artist_query_parts(known)
+        }
+        candidate_parts.discard("")
+        known_parts.discard("")
+        if not candidate_parts or not known_parts:
+            return (0, 0)
+        matches = candidate_parts & known_parts
+        extras = candidate_parts - known_parts
+        return (len(extras), len(matches))
+
+    @staticmethod
+    def _genius_result_artist(result):
+        """Return Genius's full recording credit when it is available."""
+        if not isinstance(result, dict):
+            return ""
+        return str(
+            result.get("artist_names")
+            or result.get("primary_artist", {}).get("name")
+            or ""
+        ).strip()
+
     @staticmethod
     def _lyrics_title_variants(title):
         """Try the usual missing vowels in a censored word such as b-tch."""
@@ -880,6 +916,7 @@ class DataMixin:
             target_seconds = float(metadata.get("duration_ms") or 0) / 1000
         except (TypeError, ValueError, OverflowError):
             target_seconds = 0
+        compare_full_credit = metadata.get("identity_source") == "Shazam"
         if not title or not (tag or known_artist or artist_hint):
             return None
         if tag and not artist_hint and known_artist.casefold() == tag.casefold():
@@ -917,7 +954,7 @@ class DataMixin:
                 for hit in self._genius_song_hits(payload):
                     result = hit.get("result", {}) if isinstance(hit, dict) else {}
                     page_url = str(result.get("url") or "").strip()
-                    artist = str(result.get("primary_artist", {}).get("name", ""))
+                    artist = self._genius_result_artist(result)
                     candidate_title = str(
                         result.get("title") or result.get("full_title") or ""
                     )
@@ -940,6 +977,17 @@ class DataMixin:
                     score = title_score + (
                         50 if artist_exact or artist_hint_match else 35
                     )
+                    extra_artists, matching_artists = (0, 0)
+                    if compare_full_credit:
+                        extra_artists, matching_artists = (
+                            self._lyrics_artist_credit_distance(
+                                artist, known_artist or artist_hint
+                            )
+                        )
+                    # Prefer the recording credit that introduces the fewest
+                    # people absent from the fingerprint. This distinguishes
+                    # same-title remix pages whose primary artist is unchanged.
+                    score += matching_artists * 4 - extra_artists * 40
                     candidate_seconds = self._lyrics_candidate_duration_seconds(result)
                     if candidate_seconds and target_seconds:
                         score += max(0, 12 - abs(candidate_seconds - target_seconds))
@@ -947,7 +995,14 @@ class DataMixin:
                     if previous is None or score > previous[0]:
                         candidates[page_url] = (score, result)
                 if candidates:
-                    break
+                    if not compare_full_credit or any(
+                        self._lyrics_artist_credit_distance(
+                            self._genius_result_artist(item[1]),
+                            known_artist or artist_hint,
+                        )[0] == 0
+                        for item in candidates.values()
+                    ):
+                        break
             if candidates or search_failed:
                 break
 
@@ -962,7 +1017,7 @@ class DataMixin:
                     break
                 for hit in self._genius_song_hits(payload):
                     result = hit.get("result", {}) if isinstance(hit, dict) else {}
-                    artist = str(result.get("primary_artist", {}).get("name", ""))
+                    artist = self._genius_result_artist(result)
                     candidate_title = str(result.get("title") or result.get("full_title") or "")
                     page_url = str(result.get("url") or "").strip()
                     title_score = self._genius_title_score(candidate_title, title)

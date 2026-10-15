@@ -2426,6 +2426,58 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertFalse(matches("Unrelated Artist", "Raja Kumari & Stefflon Don"))
 
+    def test_genius_artist_credit_distance_detects_remix_performers(self):
+        distance = play.Player._lyrics_artist_credit_distance
+        recognized = "Stromae, Pomme, Arcane & League of Legends Music"
+
+        self.assertEqual(distance("Stromae & Pomme", recognized), (0, 2))
+        extras, matches = distance(
+            "Stromae, Pomme & Coldplay (Ft. Arcane & League of Legends)",
+            recognized,
+        )
+        self.assertGreaterEqual(extras, 1)
+        self.assertGreaterEqual(matches, 3)
+
+    def test_genius_continues_past_same_title_remix_with_extra_artist(self):
+        player = play.Player.__new__(play.Player)
+        remix = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": "Ma Meilleure Ennemie",
+                "url": "https://genius.com/coldplay-version",
+                "primary_artist": {"name": "Stromae"},
+                "artist_names": (
+                    "Stromae, Pomme & Coldplay "
+                    "(Ft. Arcane, Elyanna & League of Legends)"
+                ),
+            },
+        }]}]}}
+        original = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": "Ma Meilleure Ennemie",
+                "url": "https://genius.com/original",
+                "primary_artist": {"name": "Stromae"},
+                "artist_names": "Stromae & Pomme",
+            },
+        }]}]}}
+        page = '<div data-lyrics-container="true">[Verse]<br>Original</div>'
+        with (
+            mock.patch.object(
+                player, "_search_genius", side_effect=[remix, original]
+            ) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page) as fetch,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": (
+                    "Stromae, Pomme, Arcane & League of Legends Music"
+                ),
+                "title": "Ma Meilleure Ennemie",
+                "identity_source": "Shazam",
+            })
+
+        self.assertEqual(search.call_count, 2)
+        fetch.assert_called_once_with("https://genius.com/original")
+        self.assertEqual(result["text"], "[Verse]\nOriginal")
+
     def test_collaboration_artist_query_parts_keep_each_full_name(self):
         self.assertEqual(
             play.Player._lyrics_artist_query_parts(
