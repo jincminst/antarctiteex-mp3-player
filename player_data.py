@@ -579,6 +579,34 @@ class DataMixin:
         value = unicodedata.normalize("NFKD", str(value or "")).casefold()
         return " ".join(re.findall(r"[a-z0-9]+", value))
 
+    @classmethod
+    def _lyrics_artist_matches(cls, candidate, known):
+        """Match exact artists and differently formatted collaboration credits."""
+        candidate = str(candidate or "").strip()
+        known = str(known or "").strip()
+        if not candidate or not known:
+            return False
+        candidate_normalized = cls._normalized_lyrics_identity(candidate)
+        known_normalized = cls._normalized_lyrics_identity(known)
+        if candidate_normalized == known_normalized:
+            return True
+
+        separator = re.compile(
+            r"\s*(?:&|,|/|\bx\b|\bfeat(?:uring)?\.?\b|\bft\.?\b)\s*",
+            re.IGNORECASE,
+        )
+        candidate_parts = {
+            cls._normalized_lyrics_identity(part)
+            for part in separator.split(candidate)
+            if cls._normalized_lyrics_identity(part)
+        }
+        known_parts = {
+            cls._normalized_lyrics_identity(part)
+            for part in separator.split(known)
+            if cls._normalized_lyrics_identity(part)
+        }
+        return bool(candidate_parts & known_parts)
+
     @staticmethod
     def _lyrics_title_variants(title):
         """Try the usual missing vowels in a censored word such as b-tch."""
@@ -728,46 +756,66 @@ class DataMixin:
                 metadata["artist_tag"]
             )
         path = self._song_path(name)
-        if not shutil.which("ffprobe") or not os.path.exists(path):
-            return metadata
-        try:
-            proc = subprocess.run(
-                [
-                    "ffprobe", "-v", "error", "-show_entries",
-                    "format=duration:format_tags",
-                    "-of", "json", path,
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            payload = json.loads(proc.stdout or "{}")
-            audio_format = payload.get("format", {})
+        if shutil.which("ffprobe") and os.path.exists(path):
             try:
-                metadata["duration_ms"] = max(
-                    0, round(float(audio_format.get("duration") or 0) * 1000)
+                proc = subprocess.run(
+                    [
+                        "ffprobe", "-v", "error", "-show_entries",
+                        "format=duration:format_tags",
+                        "-of", "json", path,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=5,
+                    check=False,
                 )
-            except (TypeError, ValueError, OverflowError):
-                metadata["duration_ms"] = 0
-            tags = audio_format.get("tags", {})
-            if not isinstance(tags, dict):
-                return metadata
-            lowered = {str(key).casefold(): value for key, value in tags.items()}
-            metadata["artist"] = str(lowered.get("artist") or artist).strip()
-            metadata["title"] = str(lowered.get("title") or title).strip()
-            metadata["album"] = str(lowered.get("album") or "").strip()
-            for key, value in lowered.items():
-                if key in {
-                    "lyrics", "unsyncedlyrics", "syncedlyrics"
-                } or key.startswith("lyrics-"):
-                    cleaned = self._clean_lyrics_text(value)
-                    if cleaned:
-                        metadata["lyrics"] = cleaned
-                        break
-        except Exception:
-            pass
+                payload = json.loads(proc.stdout or "{}")
+                audio_format = payload.get("format", {})
+                try:
+                    metadata["duration_ms"] = max(
+                        0, round(float(audio_format.get("duration") or 0) * 1000)
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    metadata["duration_ms"] = 0
+                tags = audio_format.get("tags", {})
+                if isinstance(tags, dict):
+                    lowered = {
+                        str(key).casefold(): value for key, value in tags.items()
+                    }
+                    metadata["artist"] = str(
+                        lowered.get("artist") or artist
+                    ).strip()
+                    metadata["title"] = str(
+                        lowered.get("title") or title
+                    ).strip()
+                    metadata["album"] = str(
+                        lowered.get("album") or ""
+                    ).strip()
+                    for key, value in lowered.items():
+                        if key in {
+                            "lyrics", "unsyncedlyrics", "syncedlyrics"
+                        } or key.startswith("lyrics-"):
+                            cleaned = self._clean_lyrics_text(value)
+                            if cleaned:
+                                metadata["lyrics"] = cleaned
+                                break
+            except Exception:
+                pass
+        entry = getattr(self, "meta", {}).get(name, {})
+        identity = entry.get("recognized_identity") if isinstance(entry, dict) else None
+        if isinstance(identity, dict):
+            recognized_artist = str(identity.get("artist") or "").strip()
+            recognized_title = str(identity.get("title") or "").strip()
+            if recognized_artist and recognized_title:
+                # An audio fingerprint is stronger evidence than a filename
+                # prefix such as [LoL], which may describe a franchise or
+                # playlist rather than an artist.
+                metadata["artist"] = recognized_artist
+                metadata["artist_hint"] = recognized_artist
+                metadata["artist_tag"] = ""
+                metadata["title"] = recognized_title
+                metadata["identity_source"] = "Shazam"
         return metadata
 
     @staticmethod
@@ -868,16 +916,12 @@ class DataMixin:
                         result.get("title") or result.get("full_title") or ""
                     )
                     title_score = self._genius_title_score(candidate_title, title)
-                    artist_exact = (
-                        self._normalized_lyrics_identity(artist)
-                        == self._normalized_lyrics_identity(known_artist)
-                    ) if known_artist else False
+                    artist_exact = self._lyrics_artist_matches(
+                        artist, known_artist
+                    )
                     artist_hint_match = bool(artist_hint) and (
                         not known_artist or known_artist.casefold() == tag.casefold()
-                    ) and (
-                        self._normalized_lyrics_identity(artist)
-                        == self._normalized_lyrics_identity(artist_hint)
-                    )
+                    ) and self._lyrics_artist_matches(artist, artist_hint)
                     artist_tag_match = bool(tag) and self._artist_matches_tag(artist, tag)
                     if tag and not artist_tag_match:
                         continue
@@ -961,7 +1005,8 @@ class DataMixin:
             return next(iter(artists.values())), 1
         return "", len(artists)
 
-    def _fetch_preferred_lyrics(self, metadata):
+    def _fetch_directory_lyrics(self, metadata):
+        """Try embedded lyrics, Genius, and LRCLIB without recognition."""
         # Genius is preferred for a verified artist-tag match, but it may
         # occasionally reject automated requests. Keep LRCLIB as a reliable
         # fallback instead of turning a Genius outage into "unavailable".
@@ -1010,6 +1055,126 @@ class DataMixin:
                 "url": "",
             }
         return self._fetch_lrclib_lyrics(metadata)
+
+    @staticmethod
+    def _clean_recognized_title(title):
+        """Remove service-added credits while retaining the actual title."""
+        title = str(title or "").strip()
+        title = re.sub(
+            r"\s*[\[(](?:from\s+the|feat(?:uring)?\.?|official\b)[^\])]*[\])]",
+            "",
+            title,
+            flags=re.IGNORECASE,
+        )
+        return " ".join(title.split()).strip(" -")
+
+    def _recognize_audio_identity(self, name):
+        """Identify a local recording through Shazam's audio fingerprint."""
+        path = self._song_path(name)
+        if not os.path.exists(path):
+            return None
+        try:
+            from shazamio import Shazam
+        except ImportError:
+            return None
+
+        async def recognize():
+            return await Shazam(segment_duration_seconds=10).recognize(path)
+
+        payload = asyncio.run(recognize())
+        track = payload.get("track", {}) if isinstance(payload, dict) else {}
+        artist = str(track.get("subtitle") or "").strip()
+        title = self._clean_recognized_title(track.get("title"))
+        if not artist or not title:
+            return None
+        return {"artist": artist, "title": title, "source": "Shazam"}
+
+    def _remember_recognized_identity(self, name, identity):
+        if not name or not isinstance(identity, dict):
+            return
+        saved = {
+            "artist": str(identity.get("artist") or "").strip(),
+            "title": str(identity.get("title") or "").strip(),
+            "source": str(identity.get("source") or "Shazam"),
+        }
+        if not saved["artist"] or not saved["title"]:
+            return
+        entry = self._meta_dict(name)
+        if entry.get("recognized_identity") != saved:
+            entry["recognized_identity"] = saved
+            entry.pop("lyrics_cache", None)
+            self._lyrics_memory_cache.pop(name, None)
+            self._meta_dirty = True
+
+    @staticmethod
+    def _metadata_with_recognized_identity(metadata, identity):
+        recognized = dict(metadata)
+        recognized["artist"] = identity["artist"]
+        recognized["artist_hint"] = identity["artist"]
+        recognized["artist_tag"] = ""
+        recognized["title"] = identity["title"]
+        recognized["identity_source"] = str(
+            identity.get("source") or "Shazam"
+        )
+        return recognized
+
+    def _fetch_preferred_lyrics(self, metadata, force_recognition=False):
+        """Try lyric directories, then identify unknown audio as a fallback."""
+        initial_result = None
+        initial_error = None
+        if not force_recognition:
+            try:
+                initial_result = self._fetch_directory_lyrics(metadata)
+            except Exception as exc:
+                initial_error = exc
+            if initial_result and initial_result.get("text"):
+                return initial_result
+            if metadata.get("identity_source") == "Shazam":
+                if initial_error:
+                    raise initial_error
+                return initial_result or {
+                    "status": (
+                        f"Shazam identified {metadata.get('artist')} — "
+                        f"{metadata.get('title')}, but no matching lyrics "
+                        "were found."
+                    )
+                }
+
+        name = str(metadata.get("library_name") or "").strip()
+        try:
+            identity = self._recognize_audio_identity(name)
+        except Exception as exc:
+            identity = None
+            recognition_error = exc
+        else:
+            recognition_error = None
+        if not identity:
+            if force_recognition:
+                if recognition_error:
+                    return {
+                        "status": (
+                            "Shazam recognition failed: "
+                            f"{str(recognition_error).strip() or 'unknown error'}"
+                        )
+                    }
+                return {"status": "Shazam could not identify this recording."}
+            if initial_error:
+                raise initial_error
+            return initial_result
+
+        self._remember_recognized_identity(name, identity)
+        recognized_metadata = self._metadata_with_recognized_identity(
+            metadata, identity
+        )
+        result = self._fetch_directory_lyrics(recognized_metadata)
+        if result and result.get("text"):
+            return result
+        return {
+            "status": (
+                f"Shazam identified {identity['artist']} — {identity['title']}, "
+                "but no matching lyrics were found."
+            )
+        }
 
     def _fetch_lrclib_lyrics(self, metadata):
         artist = metadata.get("artist", "").strip()
@@ -1063,8 +1228,7 @@ class DataMixin:
             if artist_tag and not self._artist_matches_tag(found_artist, artist_tag):
                 return False
             return bool(found_artist) and (
-                not artist or self._normalized_lyrics_identity(found_artist)
-                == self._normalized_lyrics_identity(artist)
+                not artist or self._lyrics_artist_matches(found_artist, artist)
                 or bool(artist_tag)
             )
 
@@ -1144,7 +1308,7 @@ class DataMixin:
             return None
         return {"text": lyrics, "source": "LRCLIB", "url": "https://lrclib.net"}
 
-    def request_lyrics(self, name):
+    def request_lyrics(self, name, force_recognition=False):
         """Load lyrics for a local song asynchronously, preferring MP3 tags."""
         if not name or name not in self._all_songs_set:
             self._lyrics_request_id += 1
@@ -1156,19 +1320,25 @@ class DataMixin:
             self.lyrics_source_url = ""
             self._lyrics_loading = False
             return
-        if name == self.lyrics_song and (self._lyrics_loading or self.lyrics_text):
+        if (
+            not force_recognition
+            and name == self.lyrics_song
+            and (self._lyrics_loading or self.lyrics_text)
+        ):
             return
         self._lyrics_request_id += 1
         request_id = self._lyrics_request_id
         self.lyrics_song = name
-        self.lyrics_status = "Finding lyrics…"
+        self.lyrics_status = (
+            "Recognizing song…" if force_recognition else "Finding lyrics…"
+        )
         self.lyrics_text = ""
         self.lyrics_italics = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
         self._lyrics_loading = True
 
-        cached = self._lyrics_memory_cache.get(name)
+        cached = None if force_recognition else self._lyrics_memory_cache.get(name)
         entry = self.meta.get(name, {})
         if not cached and isinstance(entry, dict):
             saved = entry.get("lyrics_cache")
@@ -1188,7 +1358,9 @@ class DataMixin:
             try:
                 metadata = self._read_audio_lyrics_metadata(name)
                 metadata["library_name"] = name
-                result = self._fetch_preferred_lyrics(metadata)
+                result = self._fetch_preferred_lyrics(
+                    metadata, force_recognition=force_recognition
+                )
             except Exception as exc:
                 error = str(exc)
             self._finish_lyrics_request(request_id, name, result, error)

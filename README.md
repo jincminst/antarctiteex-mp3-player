@@ -5,7 +5,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 ## Features
 
 - Local MP3 Playback
-- Automatic Lyrics Sidebar with Embedded-Tag and LRCLIB Lookup
+- Automatic Lyrics Sidebar with Genius, LRCLIB, and Audio Recognition
 - Library Search and Filtering
 - Playlist Creation, Renaming, and Deletion
 - Automatic Artist-Tag Playlists with Manual Drag-and-Drop Fallback
@@ -73,7 +73,9 @@ Click the vertical **Lyrics** tab beside the song list to open the scrollable
 sidebar. Lyrics are looked up only while that sidebar is open. The player
 searches Genius for a verified song and artist, then reads the lyrics
 from its song page. If that fails, it tries lyrics embedded in the MP3 and
-then LRCLIB. Genius's official API returns song metadata and page URLs, not
+then LRCLIB. When those sources cannot identify a matching song, the player
+uses a short Shazam audio fingerprint, caches the recognized title and artist,
+and retries the lyric directories. Genius's official API returns song metadata and page URLs, not
 lyrics text. Set `GENIUS_ACCESS_TOKEN` to a Genius API client access token to
 use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
@@ -90,6 +92,11 @@ stay visible.
 Drag the sidebar's left edge to resize it. Playlist and lyrics widths are saved
 in `.mp3cache.json` and restored the next time you open the player. Resizing
 lyrics leaves the playlist width alone.
+
+When lyrics are present, select **[Not the right lyrics?]** at the bottom of
+the sidebar to bypass the cached result, identify the recording through Shazam,
+and fetch the lyrics again with the recognized title and artist. Recognition
+runs in the background and its identity is cached; no local AI model is stored.
 
 Accurate artist and title metadata gives the best matches. The player reads
 MP3 tags first. If those are missing, use `[Artist] Song Title.mp3` or

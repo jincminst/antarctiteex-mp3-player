@@ -734,6 +734,7 @@ if TEXTUAL_AVAILABLE:
         #lyrics-source { height: 2; padding: 0 1; color: #777777; }
         #lyrics-scroll { height: 1fr; padding: 0 1 1 1; scrollbar-size: 1 1; }
         #lyrics-content { width: 100%; height: auto; padding-right: 1; }
+        #lyrics-reidentify { display: none; width: auto; min-width: 1; height: 1; margin-top: 1; padding: 0; border: none; background: #fafaf7; color: #555555; text-style: underline; }
         #workspace.youtube #playlists { display: none; }
         #workspace.youtube #playlist-resizer { display: none; }
         #workspace.youtube #library { border-left: solid #777777; }
@@ -879,6 +880,9 @@ if TEXTUAL_AVAILABLE:
                     yield Static("", id="lyrics-source")
                     with VerticalScroll(id="lyrics-scroll"):
                         yield Static("Finding lyrics…", id="lyrics-content")
+                        yield Button(
+                            "[Not the right lyrics?]", id="lyrics-reidentify"
+                        )
             yield Static("", id="drag-badge")
 
         def on_mount(self):
@@ -1287,6 +1291,7 @@ if TEXTUAL_AVAILABLE:
                 p.lyrics_source_url,
                 p.lyrics_text,
                 p.lyrics_status,
+                p._lyrics_loading,
                 id(p.lyrics_italics),
             )
             if render_state == self._lyrics_render_state:
@@ -1316,6 +1321,9 @@ if TEXTUAL_AVAILABLE:
                 else Text(content)
             )
             self.query_one("#lyrics-content", Static).update(formatted)
+            self.query_one("#lyrics-reidentify", Button).display = bool(
+                name and p.lyrics_text and not p._lyrics_loading
+            )
             if token and p.lyrics_text and token != self._lyrics_scrolled_token:
                 self._lyrics_scrolled_token = token
                 reset_scroll = True
@@ -2103,6 +2111,12 @@ if TEXTUAL_AVAILABLE:
                 self.refresh_ui(rebuild_table=True)
             elif button_id in {"lyrics-close", "lyrics-tab"}:
                 self.toggle_lyrics_panel()
+            elif button_id == "lyrics-reidentify":
+                name = p.lyrics_song
+                if name and name in p._all_songs_set:
+                    self._lyrics_render_state = None
+                    self._lyrics_scrolled_token = None
+                    p.request_lyrics(name, force_recognition=True)
             elif button_id == "help-link":
                 self.action_show_help()
             elif button_id == "apple-radio":

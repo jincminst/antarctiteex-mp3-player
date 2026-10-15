@@ -2526,6 +2526,19 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(artist, "")
         self.assertEqual(count, 2)
 
+    def test_lyrics_artist_matching_accepts_collaboration_credit_formats(self):
+        matches = play.Player._lyrics_artist_matches
+        self.assertTrue(
+            matches("Raja Kumari", "Raja Kumari & Stefflon Don")
+        )
+        self.assertTrue(
+            matches(
+                "Raja Kumari, Stefflon Don, Jarina De Marco",
+                "Raja Kumari & Stefflon Don",
+            )
+        )
+        self.assertFalse(matches("Unrelated Artist", "Raja Kumari & Stefflon Don"))
+
     def test_embedded_lyrics_work_without_artist_identity(self):
         player = play.Player.__new__(play.Player)
         with (
@@ -2539,6 +2552,128 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(result["source"], "MP3 tags")
         self.assertEqual(result["text"], "Embedded words")
         lrclib.assert_not_called()
+
+    def test_shazam_identity_cleans_service_credits_from_title(self):
+        player = play.Player.__new__(play.Player)
+        with tempfile.TemporaryDirectory() as folder:
+            player.folder = folder
+            Path(folder, "Mystery.mp3").touch()
+            shazam = mock.Mock()
+            shazam.recognize = mock.AsyncMock(return_value={
+                "track": {
+                    "title": (
+                        "Renegade (We Never Run) [from the series Arcane "
+                        "League of Legends] [feat. Jarina De Marco]"
+                    ),
+                    "subtitle": "Raja Kumari & Stefflon Don",
+                }
+            })
+            with mock.patch("shazamio.Shazam", return_value=shazam) as factory:
+                identity = player._recognize_audio_identity("Mystery")
+
+        factory.assert_called_once_with(segment_duration_seconds=10)
+        shazam.recognize.assert_awaited_once()
+        self.assertEqual(identity, {
+            "artist": "Raja Kumari & Stefflon Don",
+            "title": "Renegade (We Never Run)",
+            "source": "Shazam",
+        })
+
+    def test_failed_directories_fall_back_to_shazam_then_retry(self):
+        player = play.Player.__new__(play.Player)
+        expected = {"text": "Correct words", "source": "Genius", "url": "url"}
+        identity = {
+            "artist": "Raja Kumari & Stefflon Don",
+            "title": "Renegade (We Never Run)",
+            "source": "Shazam",
+        }
+        metadata = {
+            "artist": "LoL", "artist_tag": "LoL",
+            "title": "Regenade (We Never Run)",
+            "library_name": "[LoL] Regenade (We Never Run)",
+        }
+        with (
+            mock.patch.object(
+                player, "_fetch_directory_lyrics", side_effect=[None, expected]
+            ) as directories,
+            mock.patch.object(
+                player, "_recognize_audio_identity", return_value=identity
+            ) as recognize,
+            mock.patch.object(player, "_remember_recognized_identity") as remember,
+        ):
+            result = player._fetch_preferred_lyrics(metadata)
+
+        self.assertIs(result, expected)
+        recognize.assert_called_once_with("[LoL] Regenade (We Never Run)")
+        remember.assert_called_once_with(metadata["library_name"], identity)
+        self.assertEqual(directories.call_count, 2)
+        corrected = directories.call_args_list[1].args[0]
+        self.assertEqual(corrected["artist"], identity["artist"])
+        self.assertEqual(corrected["title"], identity["title"])
+        self.assertEqual(corrected["artist_tag"], "")
+
+    def test_forced_recognition_skips_existing_directory_match(self):
+        player = play.Player.__new__(play.Player)
+        player._lyrics_memory_cache = {}
+        player.meta = {"Song": {}}
+        identity = {"artist": "Right Artist", "title": "Song", "source": "Shazam"}
+        expected = {"text": "Right words", "source": "Genius", "url": "url"}
+        with (
+            mock.patch.object(
+                player, "_recognize_audio_identity", return_value=identity
+            ) as recognize,
+            mock.patch.object(
+                player, "_fetch_directory_lyrics", return_value=expected
+            ) as directories,
+        ):
+            result = player._fetch_preferred_lyrics(
+                {"title": "Song", "library_name": "Song"},
+                force_recognition=True,
+            )
+
+        self.assertIs(result, expected)
+        recognize.assert_called_once_with("Song")
+        directories.assert_called_once()
+        self.assertEqual(
+            player.meta["Song"]["recognized_identity"]["artist"], "Right Artist"
+        )
+
+    def test_cached_audio_identity_overrides_context_filename_tag(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/missing"
+        player.meta = {"[LoL] Regenade (We Never Run)": {
+            "recognized_identity": {
+                "artist": "Raja Kumari & Stefflon Don",
+                "title": "Renegade (We Never Run)",
+                "source": "Shazam",
+            }
+        }}
+        with mock.patch.object(play.shutil, "which", return_value=None):
+            metadata = player._read_audio_lyrics_metadata(
+                "[LoL] Regenade (We Never Run)"
+            )
+
+        self.assertEqual(metadata["artist"], "Raja Kumari & Stefflon Don")
+        self.assertEqual(metadata["title"], "Renegade (We Never Run)")
+        self.assertEqual(metadata["artist_tag"], "")
+        self.assertEqual(metadata["identity_source"], "Shazam")
+
+    def test_cached_shazam_identity_is_not_recognized_again_automatically(self):
+        player = play.Player.__new__(play.Player)
+        metadata = {
+            "artist": "Known Artist",
+            "title": "Known Song",
+            "identity_source": "Shazam",
+            "library_name": "Mystery",
+        }
+        with (
+            mock.patch.object(player, "_fetch_directory_lyrics", return_value=None),
+            mock.patch.object(player, "_recognize_audio_identity") as recognize,
+        ):
+            result = player._fetch_preferred_lyrics(metadata)
+
+        recognize.assert_not_called()
+        self.assertIn("Shazam identified Known Artist", result["status"])
 
     def test_verified_genius_outranks_embedded_mp3_lyrics(self):
         player = play.Player.__new__(play.Player)
@@ -3009,6 +3144,38 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.click("#lyrics-tab")
                         await pilot.pause()
                         request.assert_called_once_with("[OR] vampire")
+
+    async def test_wrong_lyrics_button_forces_audio_recognition(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "Mystery.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    player = app.player
+                    player.current = "Mystery"
+                    player._playback_id += 1
+                    token = ("Mystery", player._playback_id)
+                    app._lyrics_enabled = True
+                    app._lyrics_requested_token = token
+                    player.lyrics_song = "Mystery"
+                    player.lyrics_text = "[Verse 1]\nWrong words"
+                    player.lyrics_status = ""
+                    player.lyrics_source = "Genius"
+                    player.lyrics_source_url = "https://genius.com/wrong"
+                    player._lyrics_loading = False
+                    app._lyrics_render_state = None
+                    app._sync_lyrics_panel()
+                    await pilot.pause()
+
+                    button = app.query_one("#lyrics-reidentify")
+                    self.assertTrue(button.display)
+                    self.assertEqual(str(button.label), "[Not the right lyrics?]")
+                    self.assertEqual(button.styles.border.top[0], "")
+                    with mock.patch.object(player, "request_lyrics") as request:
+                        await pilot.click("#lyrics-reidentify")
+                    request.assert_called_once_with(
+                        "Mystery", force_recognition=True
+                    )
 
     async def test_new_song_lyrics_start_at_top_without_interrupting_manual_scroll(self):
         with tempfile.TemporaryDirectory() as folder:
