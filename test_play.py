@@ -2459,6 +2459,55 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertFalse(matches("Unrelated Artist", "Raja Kumari & Stefflon Don"))
 
+    def test_collaboration_artist_query_parts_keep_each_full_name(self):
+        self.assertEqual(
+            play.Player._lyrics_artist_query_parts(
+                "Billie Eilish & Khalid feat. Guest Singer"
+            ),
+            ["Billie Eilish", "Khalid", "Guest Singer"],
+        )
+
+    def test_genius_retries_collaborators_after_full_credit_misses(self):
+        player = play.Player.__new__(play.Player)
+        unrelated = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": "Lovely (Billie Eilish & Khalid Flip)",
+                "url": "https://genius.com/remix",
+                "primary_artist": {"name": "Hippie Sabotage"},
+            },
+        }]}]}}
+        exact = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": "lovely",
+                "url": "https://genius.com/Billie-eilish-and-khalid-lovely-lyrics",
+                "primary_artist": {"name": "Billie Eilish"},
+            },
+        }]}]}}
+        page = (
+            '<div data-lyrics-container="true">'
+            '[Verse 1: Billie Eilish &amp; Khalid]<br>Correct words</div>'
+        )
+        with (
+            mock.patch.object(
+                player, "_search_genius", side_effect=[unrelated, exact]
+            ) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Billie Eilish & Khalid",
+                "title": "lovely",
+                "duration_ms": 200_000,
+            })
+
+        self.assertEqual(result["source"], "Genius")
+        self.assertEqual(result["text"], (
+            "[Verse 1: Billie Eilish & Khalid]\nCorrect words"
+        ))
+        self.assertEqual(
+            [call.args[0] for call in search.call_args_list],
+            ["lovely Billie Eilish & Khalid", "lovely Billie Eilish"],
+        )
+
     def test_embedded_lyrics_work_without_artist_identity(self):
         player = play.Player.__new__(play.Player)
         with (

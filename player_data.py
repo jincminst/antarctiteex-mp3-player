@@ -591,21 +591,26 @@ class DataMixin:
         if candidate_normalized == known_normalized:
             return True
 
+        candidate_parts = set(cls._lyrics_artist_query_parts(candidate))
+        known_parts = set(cls._lyrics_artist_query_parts(known))
+        return bool(candidate_parts & known_parts)
+
+    @classmethod
+    def _lyrics_artist_query_parts(cls, artist):
+        """Return normalized individual artists from a collaboration credit."""
         separator = re.compile(
-            r"\s*(?:&|,|/|\bx\b|\bfeat(?:uring)?\.?\b|\bft\.?\b)\s*",
+            r"\s*(?:&|,|/|\bx\b|\bfeat(?:uring)?\.?|\bft\.?)\s*",
             re.IGNORECASE,
         )
-        candidate_parts = {
-            cls._normalized_lyrics_identity(part)
-            for part in separator.split(candidate)
-            if cls._normalized_lyrics_identity(part)
-        }
-        known_parts = {
-            cls._normalized_lyrics_identity(part)
-            for part in separator.split(known)
-            if cls._normalized_lyrics_identity(part)
-        }
-        return bool(candidate_parts & known_parts)
+        parts = []
+        for part in separator.split(str(artist or "")):
+            part = part.strip()
+            normalized = cls._normalized_lyrics_identity(part)
+            if normalized and normalized not in {
+                cls._normalized_lyrics_identity(item) for item in parts
+            }:
+                parts.append(part)
+        return parts
 
     @staticmethod
     def _lyrics_title_variants(title):
@@ -893,10 +898,11 @@ class DataMixin:
         )
         for artist in (preferred_artist, known_artist, artist_hint,
                        *self._artist_tag_query_variants(tag)):
-            if artist and self._normalized_lyrics_identity(artist) not in {
-                self._normalized_lyrics_identity(item) for item in query_artists
-            }:
-                query_artists.append(artist)
+            for query_artist in (artist, *self._lyrics_artist_query_parts(artist)):
+                if query_artist and self._normalized_lyrics_identity(query_artist) not in {
+                    self._normalized_lyrics_identity(item) for item in query_artists
+                }:
+                    query_artists.append(query_artist)
 
         candidates = {}
         search_failed = False
@@ -1230,11 +1236,20 @@ class DataMixin:
         if result is None:
             results = []
 
-            searches = [{"track_name": title}]
+            searches = []
             if artist:
-                searches.insert(
-                    0, {"track_name": title, "artist_name": artist}
-                )
+                seen_artists = set()
+                for query_artist in (
+                    artist, *self._lyrics_artist_query_parts(artist)
+                ):
+                    normalized = self._normalized_lyrics_identity(query_artist)
+                    if normalized and normalized not in seen_artists:
+                        seen_artists.add(normalized)
+                        searches.append({
+                            "track_name": title,
+                            "artist_name": query_artist,
+                        })
+            searches.append({"track_name": title})
             for search in searches:
                 search_params = urllib.parse.urlencode(search)
                 try:
