@@ -2573,52 +2573,6 @@ class LyricsTests(unittest.TestCase):
             "source": "Shazam",
         })
 
-    def test_shazam_sparse_samples_merge_late_guest_credit(self):
-        player = play.Player.__new__(play.Player)
-        with tempfile.TemporaryDirectory() as folder:
-            player.folder = folder
-            Path(folder, "Enemy.mp3").touch()
-            clips = [
-                play.subprocess.CompletedProcess([], 0, stdout=b"early"),
-                play.subprocess.CompletedProcess([], 0, stdout=b"middle"),
-                play.subprocess.CompletedProcess([], 0, stdout=b"late"),
-            ]
-            shazam = mock.Mock()
-            shazam.recognize = mock.AsyncMock(side_effect=[
-                {"track": {"title": "Enemy", "subtitle": "Imagine Dragons"}},
-                {"track": {
-                    "title": "Enemy", "subtitle": "Imagine Dragons & JID"
-                }},
-                {"track": {
-                    "title": "Enemy", "subtitle": "Imagine Dragons & JID"
-                }},
-            ])
-            with (
-                mock.patch.object(play.shutil, "which", return_value="/ffmpeg"),
-                mock.patch.object(
-                    play.subprocess, "run", side_effect=clips
-                ) as ffmpeg,
-                mock.patch("shazamio.Shazam", return_value=shazam),
-            ):
-                identity = player._recognize_audio_identity(
-                    "Enemy", duration_ms=173_000
-                )
-
-        self.assertEqual(ffmpeg.call_count, 3)
-        self.assertEqual(
-            [call.args[0][4] for call in ffmpeg.call_args_list],
-            ["26.140", "95.340", "129.940"],
-        )
-        self.assertEqual(
-            [call.args[0] for call in shazam.recognize.await_args_list],
-            [b"early", b"middle", b"late"],
-        )
-        self.assertEqual(identity, {
-            "artist": "Imagine Dragons & JID",
-            "title": "Enemy",
-            "source": "Shazam",
-        })
-
     def test_shazam_runs_before_directories_and_uses_recognized_identity(self):
         player = play.Player.__new__(play.Player)
         expected = {"text": "Correct words", "source": "Genius", "url": "url"}
@@ -2644,7 +2598,7 @@ class LyricsTests(unittest.TestCase):
             result = player._fetch_preferred_lyrics(metadata)
 
         self.assertIs(result, expected)
-        recognize.assert_called_once_with("[LoL] Regenade (We Never Run)", 0)
+        recognize.assert_called_once_with("[LoL] Regenade (We Never Run)")
         remember.assert_called_once_with(metadata["library_name"], identity)
         directories.assert_called_once()
         corrected = directories.call_args.args[0]
@@ -2671,7 +2625,7 @@ class LyricsTests(unittest.TestCase):
             result = player._fetch_preferred_lyrics(metadata)
 
         self.assertIs(result, expected)
-        recognize.assert_called_once_with("Local Song", 0)
+        recognize.assert_called_once_with("Local Song")
         directories.assert_called_once_with(metadata)
 
     def test_forced_recognition_skips_existing_directory_match(self):
@@ -2694,7 +2648,7 @@ class LyricsTests(unittest.TestCase):
             )
 
         self.assertIs(result, expected)
-        recognize.assert_called_once_with("Song", 0)
+        recognize.assert_called_once_with("Song")
         directories.assert_called_once()
         self.assertEqual(
             player.meta["Song"]["recognized_identity"]["artist"], "Right Artist"

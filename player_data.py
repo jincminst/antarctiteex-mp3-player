@@ -1132,76 +1132,8 @@ class DataMixin:
         )
         return " ".join(title.split()).strip(" -")
 
-    @staticmethod
-    def _recognition_sample_starts(duration_seconds, sample_seconds=10):
-        """Choose small windows that cover early, middle, and late vocals."""
-        try:
-            duration_seconds = float(duration_seconds or 0)
-        except (TypeError, ValueError, OverflowError):
-            duration_seconds = 0
-        if duration_seconds <= sample_seconds * 2:
-            return [0.0]
-        latest = max(0.0, duration_seconds - sample_seconds)
-        starts = [
-            min(latest, max(0.0, duration_seconds * fraction - sample_seconds / 2))
-            for fraction in (0.18, 0.58, 0.78)
-        ]
-        return list(dict.fromkeys(round(start, 3) for start in starts))
-
-    @classmethod
-    def _recognized_titles_compatible(cls, first, second):
-        """Treat a base title and its explicitly named edition as related."""
-        first = cls._normalized_lyrics_identity(first)
-        second = cls._normalized_lyrics_identity(second)
-        return bool(
-            first and second and (
-                first == second
-                or first.startswith(second + " ")
-                or second.startswith(first + " ")
-            )
-        )
-
-    @classmethod
-    def _merge_recognized_identities(cls, identities):
-        """Combine compatible sparse fingerprints without mixing songs."""
-        identities = [item for item in identities if item]
-        if not identities:
-            return None
-        groups = []
-        for identity in identities:
-            for group in groups:
-                if cls._recognized_titles_compatible(
-                    identity.get("title"), group[0].get("title")
-                ):
-                    group.append(identity)
-                    break
-            else:
-                groups.append([identity])
-        group = max(
-            groups,
-            key=lambda items: (
-                len(items),
-                max(len(str(item.get("title") or "")) for item in items),
-            ),
-        )
-        title = max(
-            (str(item.get("title") or "").strip() for item in group),
-            key=lambda value: len(cls._normalized_lyrics_identity(value)),
-        )
-        artists = []
-        normalized_artists = set()
-        for identity in group:
-            for artist in cls._lyrics_artist_query_parts(identity.get("artist")):
-                normalized = cls._normalized_lyrics_identity(artist)
-                if normalized and normalized not in normalized_artists:
-                    normalized_artists.add(normalized)
-                    artists.append(artist)
-        if not artists or not title:
-            return None
-        return {"artist": " & ".join(artists), "title": title, "source": "Shazam"}
-
-    def _recognize_audio_identity(self, name, duration_ms=0):
-        """Identify several short parts of a recording through Shazam."""
+    def _recognize_audio_identity(self, name):
+        """Identify the released recording through Shazam's fingerprint."""
         path = self._song_path(name)
         if not os.path.exists(path):
             return None
@@ -1210,49 +1142,16 @@ class DataMixin:
         except ImportError:
             return None
 
-        try:
-            duration_seconds = float(duration_ms or 0) / 1000
-        except (TypeError, ValueError, OverflowError):
-            duration_seconds = 0
-        inputs = []
-        if duration_seconds > 20 and shutil.which("ffmpeg"):
-            for start in self._recognition_sample_starts(duration_seconds):
-                proc = subprocess.run(
-                    [
-                        "ffmpeg", "-v", "error", "-ss", f"{start:.3f}",
-                        "-i", path, "-t", "10", "-vn", "-ac", "1",
-                        "-ar", "44100", "-codec:a", "libmp3lame",
-                        "-b:a", "128k", "-f", "mp3", "pipe:1",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=15,
-                    check=False,
-                )
-                if proc.returncode == 0 and proc.stdout:
-                    inputs.append(proc.stdout)
-        if not inputs:
-            inputs = [path]
-
         async def recognize():
-            shazam = Shazam(segment_duration_seconds=10)
-            return await asyncio.gather(
-                *(shazam.recognize(audio) for audio in inputs),
-                return_exceptions=True,
-            )
+            return await Shazam(segment_duration_seconds=10).recognize(path)
 
-        identities = []
-        for payload in asyncio.run(recognize()):
-            if isinstance(payload, Exception):
-                continue
-            track = payload.get("track", {}) if isinstance(payload, dict) else {}
-            artist = str(track.get("subtitle") or "").strip()
-            title = self._clean_recognized_title(track.get("title"))
-            if artist and title:
-                identities.append({
-                    "artist": artist, "title": title, "source": "Shazam"
-                })
-        return self._merge_recognized_identities(identities)
+        payload = asyncio.run(recognize())
+        track = payload.get("track", {}) if isinstance(payload, dict) else {}
+        artist = str(track.get("subtitle") or "").strip()
+        title = self._clean_recognized_title(track.get("title"))
+        if not artist or not title:
+            return None
+        return {"artist": artist, "title": title, "source": "Shazam"}
 
     def _remember_recognized_identity(self, name, identity):
         if not name or not isinstance(identity, dict):
@@ -1295,9 +1194,7 @@ class DataMixin:
         # providers without decoding or uploading another audio sample.
         if not already_recognized or force_recognition:
             try:
-                identity = self._recognize_audio_identity(
-                    name, metadata.get("duration_ms", 0)
-                )
+                identity = self._recognize_audio_identity(name)
             except Exception as exc:
                 recognition_error = exc
 
