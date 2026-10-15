@@ -126,9 +126,10 @@ filename begins with `[OR]`. Matching is case-insensitive, so `[or]` also
 matches. The tag must be at the start of the filename.
 
 A tagged playlist updates automatically when matching MP3 files are added,
-renamed, or removed. Because its contents come from filenames, individual songs
-cannot be dragged into or removed from a tagged playlist. Clear the playlist's
-tag to turn it back into a manual playlist that accepts drag-and-drop songs.
+renamed, or removed. You can also drag any other MP3 into it; manually added
+songs appear alongside the automatic tag matches and can be removed normally.
+Removing an automatic match requires changing its filename tag or clearing the
+playlist's tag.
 
 Playlist names do not display their assigned tags in the sidebar. The
 **Show Tags** control only changes how MP3 names appear in the song list; it

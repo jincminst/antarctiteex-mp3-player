@@ -1083,9 +1083,8 @@ if TEXTUAL_AVAILABLE:
             target = self._drag_target_playlist
             songs = list(self._drag_songs)
             if target and songs:
-                tagged = bool(self.player._playlist_tag(target))
                 added = self.player._add_songs_to_playlist(target, songs)
-                if not added and not tagged:
+                if not added:
                     noun = "Song is" if len(songs) == 1 else "Songs are"
                     self.notify(
                         f"{noun} already in '{target}'", severity="warning"
@@ -1967,18 +1966,21 @@ if TEXTUAL_AVAILABLE:
                 else:
                     songs = [name]
                 view_name = self.player._current_tab_name()
-                manual_playlist = (
+                removable_playlist = (
                     view_name
                     if view_name in self.player.playlists
-                    and not self.player._playlist_tag(view_name)
+                    and all(
+                        song in self.player.playlists[view_name]
+                        for song in songs
+                    )
                     else None
                 )
                 self.push_screen(
                     SongMenuScreen(
-                        songs, event.screen_x, event.screen_y, manual_playlist
+                        songs, event.screen_x, event.screen_y, removable_playlist
                     ),
                     lambda action: self._song_context_action(
-                        songs, action, manual_playlist
+                        songs, action, removable_playlist
                     ),
                 )
                 return

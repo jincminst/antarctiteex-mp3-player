@@ -58,13 +58,14 @@ class LibraryMixin:
         return str(getattr(self, "playlist_tags", {}).get(playlist_name, "")).strip()
 
     def _playlist_song_names(self, playlist_name):
-        """Return dynamic tag matches or the playlist's manually added songs."""
+        """Return the union of automatic tag matches and manual members."""
         tag = self._playlist_tag(playlist_name)
-        if tag:
-            prefix = f"[{tag}]".casefold()
-            return [name for name in self.all_songs if name.casefold().startswith(prefix)]
         members = set(self.playlists.get(playlist_name, []))
-        return [name for name in self.all_songs if name in members]
+        prefix = f"[{tag}]".casefold() if tag else ""
+        return [
+            name for name in self.all_songs
+            if name in members or (prefix and name.casefold().startswith(prefix))
+        ]
 
     def _set_playlist_tag(self, playlist_name, value):
         if playlist_name not in self.playlists:
@@ -188,13 +189,11 @@ class LibraryMixin:
     def _add_song_to_playlist(self, playlist_name, song_name):
         if playlist_name not in self.playlists:
             return False
-        if self._playlist_tag(playlist_name):
-            self._emit_notification(
-                f"'{playlist_name}' is filled automatically by its artist tag",
-                severity="warning",
-            )
-            return False
-        if song_name not in self.playlists[playlist_name]:
+        tag = self._playlist_tag(playlist_name)
+        automatic_match = bool(tag) and song_name.casefold().startswith(
+            f"[{tag}]".casefold()
+        )
+        if song_name not in self.playlists[playlist_name] and not automatic_match:
             self.playlists[playlist_name].append(song_name)
             self._save_playlists()
             if self.play_tab == playlist_name:
@@ -206,12 +205,6 @@ class LibraryMixin:
 
     def _remove_song_from_playlist(self, playlist_name, song_name):
         if playlist_name not in self.playlists:
-            return False
-        if self._playlist_tag(playlist_name):
-            self._emit_notification(
-                f"Edit the tag on '{playlist_name}' to change its songs",
-                severity="warning",
-            )
             return False
         if song_name in self.playlists[playlist_name]:
             self.playlists[playlist_name].remove(song_name)
@@ -226,17 +219,16 @@ class LibraryMixin:
     def _add_songs_to_playlist(self, playlist_name, song_names):
         if playlist_name not in self.playlists:
             return 0
-        if self._playlist_tag(playlist_name):
-            self._emit_notification(
-                f"'{playlist_name}' is filled automatically by its artist tag",
-                severity="warning",
-            )
-            return 0
         added = 0
         playlist = self.playlists[playlist_name]
+        existing = set(playlist)
+        tag = self._playlist_tag(playlist_name)
+        prefix = f"[{tag}]".casefold() if tag else ""
         for song_name in song_names:
-            if song_name not in playlist:
+            automatic_match = bool(prefix) and song_name.casefold().startswith(prefix)
+            if song_name not in existing and not automatic_match:
                 playlist.append(song_name)
+                existing.add(song_name)
                 added += 1
         if added:
             self._save_playlists()
@@ -251,12 +243,6 @@ class LibraryMixin:
 
     def _remove_songs_from_playlist(self, playlist_name, song_names):
         if playlist_name not in self.playlists:
-            return 0
-        if self._playlist_tag(playlist_name):
-            self._emit_notification(
-                f"Edit the tag on '{playlist_name}' to change its songs",
-                severity="warning",
-            )
             return 0
         remove_set = set(song_names)
         playlist = self.playlists[playlist_name]

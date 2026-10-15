@@ -245,9 +245,9 @@ class LegacyUIMixin:
         items = []
         count = len(songs)
         for pl_name in sorted(self.playlists.keys(), key=str.lower):
-            if self._playlist_tag(pl_name):
-                continue
-            pl_set = set(self._playlist_song_names(pl_name))
+            # For a tagged playlist, only explicit manual members can be
+            # removed; automatic filename matches remain supplied by its tag.
+            pl_set = set(self.playlists.get(pl_name, []))
             in_count = sum(1 for song in songs if song in pl_set)
             if in_count == count:
                 label = f" ✕ Remove {count} from '{pl_name}'"

@@ -1180,24 +1180,41 @@ class PureHelperTests(unittest.TestCase):
             )
             self.assertEqual(player._load_playlists(), {"Mix": ["a", "b"]})
 
-    def test_tagged_playlist_finds_matching_mp3s_and_manual_playlist_uses_drags(self):
+    def test_tagged_playlist_combines_matches_with_manual_dragged_songs(self):
         player = bare_player()
         player.all_songs = [
             "[OR] vampire", "[21P] Lavish", "[or] drivers license", "Golden"
         ]
-        player.playlists = {"Olivia": ["Golden"]}
+        player.playlists = {"Olivia": []}
         player.playlist_tags = {"Olivia": "OR"}
+        player.play_tab = "All"
+        player._save_playlists = mock.Mock()
+        player._rebuild = mock.Mock()
 
         self.assertEqual(
             player._playlist_song_names("Olivia"),
             ["[OR] vampire", "[or] drivers license"],
         )
+        self.assertEqual(
+            player._add_songs_to_playlist("Olivia", ["[OR] vampire"]), 0
+        )
         player._emit_notification = mock.Mock()
-        self.assertEqual(player._add_songs_to_playlist("Olivia", ["Golden"]), 0)
+        self.assertEqual(player._add_songs_to_playlist("Olivia", ["Golden"]), 1)
         self.assertEqual(player.playlists["Olivia"], ["Golden"])
+        self.assertEqual(
+            player._playlist_song_names("Olivia"),
+            ["[OR] vampire", "[or] drivers license", "Golden"],
+        )
+        self.assertEqual(
+            player._remove_songs_from_playlist("Olivia", ["Golden"]), 1
+        )
+        self.assertEqual(
+            player._playlist_song_names("Olivia"),
+            ["[OR] vampire", "[or] drivers license"],
+        )
 
         player.playlist_tags.clear()
-        self.assertEqual(player._playlist_song_names("Olivia"), ["Golden"])
+        self.assertEqual(player._playlist_song_names("Olivia"), [])
 
     def test_playlist_tag_rejects_square_brackets(self):
         player = bare_player()
