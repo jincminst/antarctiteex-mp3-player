@@ -2196,6 +2196,9 @@ class LyricsTests(unittest.TestCase):
         score = play.Player._genius_title_score
         title = hidden_word("all-american b tch", 14, "i")
         self.assertEqual(score("vampire", "vampire"), 100)
+        self.assertEqual(
+            score("Dynasties & Dystopia", "Dynasties and Dystopia"), 100
+        )
         self.assertEqual(score("vampire ft. Someone", "vampire"), 90)
         self.assertEqual(score("vampire (Spanish Translation)", "vampire"), 0)
         self.assertEqual(score("vampire Remix", "vampire"), 0)

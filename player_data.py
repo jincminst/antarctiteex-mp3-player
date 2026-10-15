@@ -668,9 +668,12 @@ class DataMixin:
     @classmethod
     def _genius_title_score(cls, candidate, wanted):
         """Score a Genius title without confusing translations for originals."""
-        candidate = cls._normalized_lyrics_identity(candidate)
+        normalize_title = lambda value: cls._normalized_lyrics_identity(
+            str(value or "").replace("&", " and ")
+        )
+        candidate = normalize_title(candidate)
         wanted_variants = [
-            cls._normalized_lyrics_identity(variant)
+            normalize_title(variant)
             for variant in cls._lyrics_title_variants(wanted)
         ]
         if not candidate or not any(wanted_variants):
