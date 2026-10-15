@@ -1292,6 +1292,7 @@ if TEXTUAL_AVAILABLE:
                 p.lyrics_status,
                 p._lyrics_loading,
                 id(p.lyrics_italics),
+                id(p.lyrics_bold),
             )
             if render_state == self._lyrics_render_state:
                 return
@@ -1315,7 +1316,7 @@ if TEXTUAL_AVAILABLE:
                 or ("Finding lyrics…" if name else "Play a local MP3 to see lyrics.")
             )
             formatted = (
-                _render_singer_lyrics(content, p.lyrics_italics)
+                _render_singer_lyrics(content, p.lyrics_italics, p.lyrics_bold)
                 if p.lyrics_text
                 else Text(content)
             )

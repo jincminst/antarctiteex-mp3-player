@@ -507,6 +507,7 @@ class LegacyUIMixin:
                 self.lyrics_status = ""
                 self.lyrics_text = ""
                 self.lyrics_italics = []
+                self.lyrics_bold = []
                 self.lyrics_source = ""
                 self.lyrics_source_url = ""
                 self._lyrics_loading = False

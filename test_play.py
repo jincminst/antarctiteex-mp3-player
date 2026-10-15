@@ -1719,113 +1719,77 @@ class LyricsTests(unittest.TestCase):
         return next((span.style for span in rendered.spans
                      if span.start <= position < span.end), None)
 
-    def test_ampersand_credit_is_one_singer_group(self):
-        lyrics = (
-            "[Verse: Billie Eilish & Khalid]\n"
-            "Every line belongs to the joint group"
-        )
-        rendered = play._render_singer_lyrics(lyrics, [])
+    def test_unstyled_genius_text_keeps_terminal_default_color(self):
+        lyrics = "[Verse: Billie Eilish & Khalid]\nEveryone sings this line"
+        rendered = play._render_singer_lyrics(lyrics, [], [])
 
         self.assertIsNone(self._rendered_color(rendered, "Billie Eilish"))
-        self.assertIsNone(self._rendered_color(rendered, "Khalid"))
-        self.assertIsNone(self._rendered_color(rendered, "Every line"))
+        self.assertIsNone(self._rendered_color(rendered, "Everyone sings"))
 
-    def test_comma_separates_solo_and_joint_singer_groups(self):
+    def test_native_italic_span_is_colored_without_word_counting(self):
         lyrics = (
-            "[Pre-Chorus: Billie Eilish, Khalid & Billie Eilish]\n"
-            "Billie sings most of these ordinary lyric words\n"
-            "Both sing"
+            "[Chorus: Billie Eilish, Billie Eilish & Khalid]\n"
+            "A very long unstyled passage\nBoth"
         )
-        joint_line = len("Both sing")
-        italics = [[], [], [[0, joint_line]]]
-        rendered = play._render_singer_lyrics(lyrics, italics)
-        heading = lyrics.index("[Pre-Chorus:")
-        joint = lyrics.index("Khalid", heading)
+        joint_start = lyrics.splitlines()[0].index("Billie Eilish & Khalid")
+        italics = [
+            [[joint_start, joint_start + len("Billie Eilish & Khalid")]],
+            [],
+            [[0, len("Both")]],
+        ]
+        rendered = play._render_singer_lyrics(lyrics, italics, [])
 
-        self.assertIsNone(self._rendered_color(rendered, "Billie Eilish", heading))
-        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
-        joint_color = self._rendered_color(rendered, "Khalid", heading)
-        self.assertIsNotNone(joint_color)
-        self.assertEqual(
-            self._rendered_color(rendered, "Billie Eilish", joint), joint_color
+        self.assertIsNone(self._rendered_color(rendered, "A very long"))
+        heading_color = self._rendered_color(
+            rendered, "Billie Eilish & Khalid"
         )
-        self.assertEqual(self._rendered_color(rendered, "Both sing"), joint_color)
+        self.assertIsNotNone(heading_color)
+        self.assertEqual(self._rendered_color(rendered, "Both"), heading_color)
 
-    def test_genius_html_italics_assign_the_second_comma_group(self):
+    def test_genius_italic_and_bold_groups_get_distinct_colors(self):
         parser = play._GeniusLyricsParser()
         parser.feed(
             '<div data-lyrics-container="true">'
-            '[Pre-Chorus: Billie Eilish, Khalid &amp; Billie Eilish]<br>'
-            'Billie sings most of these ordinary lyric words<br>'
-            '<span style="font-style: italic"><span>Both sing</span></span>'
+            '[Outro: Khalid, <i>Billie Eilish</i>, '
+            '<strong>Khalid &amp; Billie Eilish</strong>]<br>'
+            'Khalid solo<br><span style="font-style: italic">Billie solo</span><br>'
+            '<span style="font-weight: 700">Both together</span>'
             '</div>'
         )
         marked = play.Player._clean_lyrics_text(parser.marked_text())
-        lyrics, italics = play._extract_lyric_italics(marked)
-        rendered = play._render_singer_lyrics(lyrics, italics)
+        lyrics, italics, bold = play._extract_lyric_styles(marked)
+        rendered = play._render_singer_lyrics(lyrics, italics, bold)
 
-        self.assertNotIn("\ue000", parser.text())
-        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
+        self.assertNotIn(play._ITALIC_START, parser.text())
+        self.assertNotIn(play._BOLD_START, parser.text())
+        self.assertIsNone(self._rendered_color(rendered, "Khalid solo"))
+        italic_color = self._rendered_color(rendered, "Billie solo")
+        bold_color = self._rendered_color(rendered, "Both together")
+        self.assertIsNotNone(italic_color)
+        self.assertIsNotNone(bold_color)
+        self.assertNotEqual(italic_color, bold_color)
         self.assertEqual(
-            self._rendered_color(rendered, "Khalid"),
-            self._rendered_color(rendered, "Both sing"),
+            self._rendered_color(rendered, "Billie Eilish", lyrics.index("[Outro")),
+            italic_color,
         )
-        self.assertIsNotNone(self._rendered_color(rendered, "Both sing"))
-
-    def test_word_count_can_make_joint_group_dominant_in_section(self):
-        lyrics = (
-            "[Pre-Chorus: Billie Eilish, Khalid & Billie Eilish]\n"
-            "Billie solo\n"
-            "Both singers carry this much longer shared passage"
+        joint_start = lyrics.index("Khalid & Billie Eilish")
+        self.assertEqual(
+            self._rendered_color(rendered, "Khalid & Billie Eilish", joint_start),
+            bold_color,
         )
-        shared = "Both singers carry this much longer shared passage"
-        italics = [[], [], [[0, len(shared)]]]
-        rendered = play._render_singer_lyrics(lyrics, italics)
-        heading = lyrics.index("[Pre-Chorus:")
-        joint = lyrics.index("Khalid", heading)
 
-        solo_color = self._rendered_color(rendered, "Billie Eilish", heading)
-        self.assertIsNotNone(solo_color)
-        self.assertEqual(self._rendered_color(rendered, "Billie solo"), solo_color)
-        self.assertIsNone(self._rendered_color(rendered, "Khalid", heading))
-        self.assertIsNone(self._rendered_color(rendered, "Billie Eilish", joint))
-        self.assertIsNone(self._rendered_color(rendered, shared))
-
-    def test_dominant_group_is_calculated_again_for_each_section(self):
-        first_plain = "Solo singer owns most words in this section"
-        first_joint = "Together briefly"
-        second_plain = "Solo briefly"
-        second_joint = "Together they sing substantially more words in this section"
-        lyrics = (
-            "[Verse: Singer One, Singer Two & Singer One]\n"
-            f"{first_plain}\n{first_joint}\n"
-            "[Chorus: Singer One, Singer Two & Singer One]\n"
-            f"{second_plain}\n{second_joint}"
+    def test_genius_inline_style_can_continue_across_line_break(self):
+        parser = play._GeniusLyricsParser()
+        parser.feed(
+            '<div data-lyrics-container="true">'
+            '<span style="font-weight:bold">First line<br>Second line</span>'
+            '</div>'
         )
-        italics = [
-            [], [], [[0, len(first_joint)]],
-            [], [], [[0, len(second_joint)]],
-        ]
-        rendered = play._render_singer_lyrics(lyrics, italics)
+        lyrics, italics, bold = play._extract_lyric_styles(parser.marked_text())
 
-        self.assertIsNone(self._rendered_color(rendered, first_plain))
-        first_joint_color = self._rendered_color(rendered, first_joint)
-        self.assertIsNotNone(first_joint_color)
-        second_solo_color = self._rendered_color(rendered, second_plain)
-        self.assertIsNotNone(second_solo_color)
-        self.assertIsNone(self._rendered_color(rendered, second_joint))
-
-    def test_partial_italic_range_colors_only_that_singer_groups_words(self):
-        line = "Billie sings many more solo words before both finish"
-        start = line.index("both")
-        lyrics = (
-            "[Bridge: Billie Eilish, Khalid & Billie Eilish]\n" + line
-        )
-        italics = [[], [[start, len(line)]]]
-        rendered = play._render_singer_lyrics(lyrics, italics)
-
-        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
-        self.assertIsNotNone(self._rendered_color(rendered, "both finish"))
+        self.assertEqual(lyrics, "First line\nSecond line\n")
+        self.assertEqual(italics, [[], [], []])
+        self.assertEqual(bold[:2], [[[0, 10]], [[0, 11]]])
 
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)
@@ -1841,7 +1805,8 @@ class LyricsTests(unittest.TestCase):
         )
         player._finish_lyrics_request(
             1, "Example", {"text": lyric,
-                           "source": "Genius", "italics": [[], [[0, 16]]]}
+                           "source": "Genius", "italics": [[], [[0, 16]]],
+                           "bold": [[], [[0, 4]]]}
         )
 
         self.assertEqual(
@@ -1849,7 +1814,9 @@ class LyricsTests(unittest.TestCase):
         )
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
         self.assertEqual(player.lyrics_italics, [[], [[0, 16]]])
+        self.assertEqual(player.lyrics_bold, [[], [[0, 4]]])
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["italics"], player.lyrics_italics)
+        self.assertEqual(player.meta["Example"]["lyrics_cache"]["bold"], player.lyrics_bold)
 
     def test_censoring_keeps_a_whole_italic_line_marked(self):
         player = play.Player.__new__(play.Player)

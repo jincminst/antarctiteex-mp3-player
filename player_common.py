@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import colorsys
 import ctypes
 import difflib
 import html.parser
@@ -224,10 +223,12 @@ LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
-LYRICS_CACHE_VERSION = 7
+LYRICS_CACHE_VERSION = 8
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
-_SINGER_COLORS = ("#61c9ff", "#ffba6b", "#c6a4ff", "#69dbaa", "#ff8fb1", "#f0dd75")
+_BOLD_START = "\ue002"
+_BOLD_END = "\ue003"
+_SINGER_COLORS = ("#61c9ff", "#ffba6b")
 
 
 class _AudioObjectPropertyAddress(ctypes.Structure):
@@ -269,8 +270,10 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
         self.depth = 0
         self.lines = []
         self.italic_depth = 0
+        self.bold_depth = 0
         self.span_depth = 0
         self.italic_span_depths = []
+        self.bold_span_depths = []
 
     def _enter_italic(self):
         if not self.italic_depth:
@@ -282,6 +285,17 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
             self.italic_depth -= 1
             if not self.italic_depth:
                 self.lines.append(_ITALIC_END)
+
+    def _enter_bold(self):
+        if not self.bold_depth:
+            self.lines.append(_BOLD_START)
+        self.bold_depth += 1
+
+    def _leave_bold(self):
+        if self.bold_depth:
+            self.bold_depth -= 1
+            if not self.bold_depth:
+                self.lines.append(_BOLD_END)
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
@@ -298,11 +312,17 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
             self.lines.append("\n")
         elif tag in {"i", "em"}:
             self._enter_italic()
+        elif tag in {"b", "strong"}:
+            self._enter_bold()
         elif tag == "span":
             self.span_depth += 1
-            if re.search(r"font-style\s*:\s*italic\b", attributes.get("style", ""), re.I):
+            style = attributes.get("style", "")
+            if re.search(r"font-style\s*:\s*italic\b", style, re.I):
                 self.italic_span_depths.append(self.span_depth)
                 self._enter_italic()
+            if re.search(r"font-weight\s*:\s*(?:bold|[6-9]00)\b", style, re.I):
+                self.bold_span_depths.append(self.span_depth)
+                self._enter_bold()
 
     def handle_endtag(self, tag):
         if self.depth and tag == "div":
@@ -311,15 +331,24 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
                 if self.italic_depth:
                     self.lines.append(_ITALIC_END)
                     self.italic_depth = 0
+                if self.bold_depth:
+                    self.lines.append(_BOLD_END)
+                    self.bold_depth = 0
                 self.span_depth = 0
                 self.italic_span_depths.clear()
+                self.bold_span_depths.clear()
                 self.lines.append("\n")
         elif self.depth and tag in {"i", "em"} and self.italic_depth:
             self._leave_italic()
+        elif self.depth and tag in {"b", "strong"} and self.bold_depth:
+            self._leave_bold()
         elif self.depth and tag == "span":
             if self.italic_span_depths and self.italic_span_depths[-1] == self.span_depth:
                 self.italic_span_depths.pop()
                 self._leave_italic()
+            if self.bold_span_depths and self.bold_span_depths[-1] == self.span_depth:
+                self.bold_span_depths.pop()
+                self._leave_bold()
             self.span_depth = max(0, self.span_depth - 1)
 
     def handle_data(self, data):
@@ -327,38 +356,65 @@ class _GeniusLyricsParser(html.parser.HTMLParser):
             self.lines.append(data)
 
     def text(self):
-        return self.marked_text().replace(_ITALIC_START, "").replace(_ITALIC_END, "")
+        return self.marked_text().translate({
+            ord(_ITALIC_START): None,
+            ord(_ITALIC_END): None,
+            ord(_BOLD_START): None,
+            ord(_BOLD_END): None,
+        })
 
     def marked_text(self):
         return "".join(self.lines)
 
 
-def _extract_lyric_italics(marked_text):
-    """Return plain lyrics and per-line character ranges that Genius italicized."""
+def _extract_lyric_styles(marked_text):
+    """Return plain lyrics plus Genius italic and bold character ranges."""
     plain_lines = []
-    spans = []
+    italic_lines = []
+    bold_lines = []
     italic = False
+    bold = False
     for marked_line in marked_text.split("\n"):
         plain = []
-        line_spans = []
-        start = 0 if italic else None
+        italic_spans = []
+        bold_spans = []
+        italic_start = 0 if italic else None
+        bold_start = 0 if bold else None
         for character in marked_line:
             if character == _ITALIC_START:
                 if not italic:
-                    start = len(plain)
+                    italic_start = len(plain)
                 italic = True
             elif character == _ITALIC_END:
-                if italic and start is not None and len(plain) > start:
-                    line_spans.append([start, len(plain)])
+                if italic and italic_start is not None and len(plain) > italic_start:
+                    italic_spans.append([italic_start, len(plain)])
                 italic = False
-                start = None
+                italic_start = None
+            elif character == _BOLD_START:
+                if not bold:
+                    bold_start = len(plain)
+                bold = True
+            elif character == _BOLD_END:
+                if bold and bold_start is not None and len(plain) > bold_start:
+                    bold_spans.append([bold_start, len(plain)])
+                bold = False
+                bold_start = None
             else:
                 plain.append(character)
-        if italic and start is not None and len(plain) > start:
-            line_spans.append([start, len(plain)])
+        if italic and italic_start is not None and len(plain) > italic_start:
+            italic_spans.append([italic_start, len(plain)])
+        if bold and bold_start is not None and len(plain) > bold_start:
+            bold_spans.append([bold_start, len(plain)])
         plain_lines.append("".join(plain))
-        spans.append(line_spans)
-    return "\n".join(plain_lines), spans
+        italic_lines.append(italic_spans)
+        bold_lines.append(bold_spans)
+    return "\n".join(plain_lines), italic_lines, bold_lines
+
+
+def _extract_lyric_italics(marked_text):
+    """Backward-compatible italic-only view of Genius formatting."""
+    lyrics, italics, _bold = _extract_lyric_styles(marked_text)
+    return lyrics, italics
 
 
 def _remap_lyric_italics(original, censored, italics):
@@ -397,129 +453,32 @@ def _remap_lyric_italics(original, censored, italics):
     return remapped
 
 
-def _singer_identity_color(index):
-    """Return a distinct readable color for every credited identity."""
-    if index < len(_SINGER_COLORS):
-        return _SINGER_COLORS[index]
-    hue = (index * 0.618033988749895) % 1.0
-    red, green, blue = colorsys.hls_to_rgb(hue, 0.62, 0.62)
-    return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
-
-
-def _render_singer_lyrics(lyrics, italics):
-    """Color non-dominant Genius singer groups within each lyric section.
-
-    Genius separates alternate singer groups with commas in a section credit.
-    Ampersands stay inside a group: ``A, B & A`` means solo A plus the joint
-    B-and-A group.  In those multi-group sections, ordinary text belongs to
-    the first group and italic text belongs to the second.  The group covering
-    the most lyric words in that section remains the terminal's normal color.
-    """
+def _render_singer_lyrics(lyrics, italics, bold=None):
+    """Translate Genius singer formatting into terminal-safe colors."""
     rendered = Text(lyrics)
     lines = lyrics.split("\n")
-    heading = re.compile(
-        r"^\[(?:verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|intro|"
-        r"outro|refrain|hook|break|interlude)[^:\]]*:\s*([^\]]+)\]$", re.I
-    )
-    sections = []
-    first_seen = {}
-
-    def identity_for(group):
-        # A joint credit is deliberately one identity. Sorting its members
-        # makes "A & B" and "B & A" the same group without merging it into
-        # either singer's solo identity.
-        members = [
-            member.strip().casefold()
-            for member in re.split(r"\s*(?:&|\band\b|/|\+)\s*", group, flags=re.I)
-            if member.strip()
-        ]
-        unique = tuple(sorted(set(members)))
-        return (("solo", unique[0]) if len(unique) == 1 else ("group", unique))
-
-    for index, line in enumerate(lines):
-        match = heading.match(line)
-        if not match:
-            continue
-        credit = match.group(1)
-        groups = []
-        for group_match in re.finditer(r"[^,]+", credit):
-            raw = group_match.group()
-            left = len(raw) - len(raw.lstrip())
-            right = len(raw.rstrip())
-            group = raw.strip()
-            if not group:
-                continue
-            identity = identity_for(group)
-            groups.append((
-                identity,
-                match.start(1) + group_match.start() + left,
-                match.start(1) + group_match.start() + right,
-            ))
-            first_seen.setdefault(identity, len(first_seen))
-        if not groups:
-            continue
-        end = index + 1
-        while end < len(lines) and not (lines[end].startswith("[") and lines[end].endswith("]")):
-            end += 1
-        sections.append((index, end, groups))
-
-    if not first_seen:
-        return rendered
-    colors = {
-        identity: _singer_identity_color(index)
-        for index, identity in enumerate(first_seen)
-    }
     offsets = []
     offset = 0
     for line in lines:
         offsets.append(offset)
         offset += len(line) + 1
 
-    word = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
-    for index, end, groups in sections:
-        identities = [group[0] for group in groups]
-        counts = [0] * len(groups)
-        styled_segments = []
-        for line_index in range(index + 1, end):
-            line = lines[line_index]
-            spans = italics[line_index] if line_index < len(italics) else []
-            boundaries = {0, len(line)}
-            clipped = []
+    for spans_by_line, color in (
+        (italics or [], _SINGER_COLORS[0]),
+        (bold or [], _SINGER_COLORS[1]),
+    ):
+        for line_index, spans in enumerate(spans_by_line):
+            if line_index >= len(lines):
+                break
             for start, finish in spans:
-                start = max(0, min(len(line), start))
-                finish = max(start, min(len(line), finish))
+                start = max(0, min(len(lines[line_index]), start))
+                finish = max(start, min(len(lines[line_index]), finish))
                 if finish > start:
-                    clipped.append((start, finish))
-                    boundaries.update((start, finish))
-            points = sorted(boundaries)
-            for start, finish in zip(points, points[1:]):
-                if start == finish:
-                    continue
-                is_italic = any(left <= start and finish <= right for left, right in clipped)
-                group_index = 1 if is_italic and len(groups) > 1 else 0
-                counts[group_index] += len(word.findall(line[start:finish]))
-                styled_segments.append((line_index, start, finish, group_index))
-
-        # A tie goes to the first credited group, matching Genius's ordinary
-        # (non-italic) text. Groups beyond the two styles Genius exposes still
-        # get distinct heading colors instead of being merged at ampersands.
-        dominant = max(range(len(groups)), key=lambda group_index: (
-            counts[group_index], -group_index
-        ))
-        for group_index, (identity, credit_start, credit_end) in enumerate(groups):
-            if group_index != dominant:
-                rendered.stylize(
-                    colors[identity],
-                    offsets[index] + credit_start,
-                    offsets[index] + credit_end,
-                )
-        for line_index, start, finish, group_index in styled_segments:
-            if group_index != dominant and lines[line_index][start:finish].strip():
-                rendered.stylize(
-                    colors[identities[group_index]],
-                    offsets[line_index] + start,
-                    offsets[line_index] + finish,
-                )
+                    rendered.stylize(
+                        color,
+                        offsets[line_index] + start,
+                        offsets[line_index] + finish,
+                    )
     return rendered
 
 

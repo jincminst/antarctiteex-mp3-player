@@ -70,22 +70,20 @@ The player stores song metadata, playlists, settings, and analysis in a single
 ## Lyrics
 
 Click the vertical **Lyrics** tab beside the song list to open the scrollable
-sidebar. Lyrics are looked up only while that sidebar is open. The player
-searches Genius for a verified song and artist, then reads the lyrics
-from its song page. If that fails, it tries lyrics embedded in the MP3 and
-then LRCLIB. When those sources cannot identify a matching song, the player
-uses a short Shazam audio fingerprint, caches the recognized title and artist,
-and retries the lyric directories. Genius's official API returns song metadata and page URLs, not
+sidebar. Lyrics are looked up only while that sidebar is open. For an uncached
+song, the player uses a short Shazam audio fingerprint, caches the recognized
+title and artist, then searches Genius and LRCLIB with that identity. Embedded
+lyrics and filename metadata remain fallbacks when Shazam cannot identify a
+recording. Genius's official API returns song metadata and page URLs, not
 lyrics text. Set `GENIUS_ACCESS_TOKEN` to a Genius API client access token to
 use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
-visible. The singer with the most solo lines keeps the normal text color;
-other credited singers get distinct colors. In a duet, Genius italic markup
-is used to color only the words attributed to an added singer, including
-their part of a shared line. If the markup does not identify which words
-belong to whom, the lyrics stay in the normal color. Lyrics are censored
+visible. Genius's own singer formatting is translated directly for terminals:
+normal lyrics keep the default text color, italic spans use one accent, and
+bold spans use another. The player does not infer singers from word counts or
+punctuation. Lyrics are censored
 with better-profanity,
 including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
 stay visible.
@@ -143,11 +141,8 @@ number as English words too, so `[21P]` also searches with `twenty one P`.
 Joined artist names work too: `[1R] Counting Stars` matches OneRepublic.
 If searches using the tag miss, the player also searches by song title and
 accepts lyrics only when the result's artist matches the tag.
-In Genius lyrics, a section crediting multiple singers colors every name and
-separator in the joint credit. If no individual vocal parts are marked, the
-shared lines get a group color too. When parts are marked, only the guest
-singer's lyric part is colored; the lead singer's solo parts stay in the
-normal text color.
+In Genius lyrics, the terminal colors the exact singer names and lyric spans
+that Genius italicizes or bolds. Unstyled text keeps the normal terminal color.
 
 `ffmpeg` and `ffprobe` must be available on `PATH` for audio conversion and
 analysis features. On macOS, install them with `brew install ffmpeg`.

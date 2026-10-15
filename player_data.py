@@ -984,9 +984,9 @@ class DataMixin:
             except Exception:
                 continue
             marked = self._clean_lyrics_text(parser.marked_text())
-            lyrics, italics = _extract_lyric_italics(marked)
+            lyrics, italics, bold = _extract_lyric_styles(marked)
             if lyrics:
-                return {"text": lyrics, "italics": italics,
+                return {"text": lyrics, "italics": italics, "bold": bold,
                         "source": "Genius", "url": page_url}
         return None
 
@@ -1319,6 +1319,7 @@ class DataMixin:
             self.lyrics_status = ""
             self.lyrics_text = ""
             self.lyrics_italics = []
+            self.lyrics_bold = []
             self.lyrics_source = ""
             self.lyrics_source_url = ""
             self._lyrics_loading = False
@@ -1346,6 +1347,7 @@ class DataMixin:
         )
         self.lyrics_text = ""
         self.lyrics_italics = []
+        self.lyrics_bold = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
         self._lyrics_loading = True
@@ -1401,6 +1403,7 @@ class DataMixin:
             self.lyrics_status = ""
             self.lyrics_text = ""
             self.lyrics_italics = []
+            self.lyrics_bold = []
             self.lyrics_source = ""
             self.lyrics_source_url = ""
             self._lyrics_loading = False
@@ -1417,16 +1420,21 @@ class DataMixin:
             italics = _remap_lyric_italics(
                 clean_text, censored_text, result.get("italics") or []
             )
+            bold = _remap_lyric_italics(
+                clean_text, censored_text, result.get("bold") or []
+            )
             result = {
                 "text": censored_text,
                 "source": str(result.get("source") or "Lyrics"),
                 "url": str(result.get("url") or ""),
                 "italics": italics,
+                "bold": bold,
                 "cache_version": LYRICS_CACHE_VERSION,
             }
             self._lyrics_memory_cache[name] = result
             self.lyrics_text = result["text"]
             self.lyrics_italics = result["italics"]
+            self.lyrics_bold = result["bold"]
             self.lyrics_source = result["source"]
             self.lyrics_source_url = result["url"]
             self.lyrics_status = ""
