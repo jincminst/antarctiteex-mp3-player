@@ -1696,239 +1696,119 @@ class PureHelperTests(unittest.TestCase):
 
 
 class LyricsTests(unittest.TestCase):
-    def test_first_identity_wins_a_section_count_tie(self):
+    @staticmethod
+    def _rendered_color(rendered, fragment, start=0):
+        position = rendered.plain.index(fragment, start)
+        return next((span.style for span in rendered.spans
+                     if span.start <= position < span.end), None)
+
+    def test_ampersand_credit_is_one_singer_group(self):
+        lyrics = (
+            "[Verse: Billie Eilish & Khalid]\n"
+            "Every line belongs to the joint group"
+        )
+        rendered = play._render_singer_lyrics(lyrics, [])
+
+        self.assertIsNone(self._rendered_color(rendered, "Billie Eilish"))
+        self.assertIsNone(self._rendered_color(rendered, "Khalid"))
+        self.assertIsNone(self._rendered_color(rendered, "Every line"))
+
+    def test_comma_separates_solo_and_joint_singer_groups(self):
+        lyrics = (
+            "[Pre-Chorus: Billie Eilish, Khalid & Billie Eilish]\n"
+            "Billie sings most of these ordinary lyric words\n"
+            "Both sing"
+        )
+        joint_line = len("Both sing")
+        italics = [[], [], [[0, joint_line]]]
+        rendered = play._render_singer_lyrics(lyrics, italics)
+        heading = lyrics.index("[Pre-Chorus:")
+        joint = lyrics.index("Khalid", heading)
+
+        self.assertIsNone(self._rendered_color(rendered, "Billie Eilish", heading))
+        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
+        joint_color = self._rendered_color(rendered, "Khalid", heading)
+        self.assertIsNotNone(joint_color)
+        self.assertEqual(
+            self._rendered_color(rendered, "Billie Eilish", joint), joint_color
+        )
+        self.assertEqual(self._rendered_color(rendered, "Both sing"), joint_color)
+
+    def test_genius_html_italics_assign_the_second_comma_group(self):
         parser = play._GeniusLyricsParser()
         parser.feed(
             '<div data-lyrics-container="true">'
-            '[Verse 1: Mira Vale &amp; Rowan Frost]<br>'
-            'First line<br><span style="font-style: italic"><span>Second line</span></span><br>'
-            'First again<br>'
-            '<i>Emphasis</i> in a normal line<br>'
-            '[Chorus: Mira Vale]<br>Solo line'
+            '[Pre-Chorus: Billie Eilish, Khalid &amp; Billie Eilish]<br>'
+            'Billie sings most of these ordinary lyric words<br>'
+            '<span style="font-style: italic"><span>Both sing</span></span>'
             '</div>'
         )
         marked = play.Player._clean_lyrics_text(parser.marked_text())
         lyrics, italics = play._extract_lyric_italics(marked)
-        self.assertEqual(parser.text().count("\ue000"), 0)
-        self.assertIn("[Verse 1: Mira Vale & Rowan Frost]", lyrics)
         rendered = play._render_singer_lyrics(lyrics, italics)
 
-        def color_at(fragment):
-            position = rendered.plain.index(fragment)
-            colors = [span.style for span in rendered.spans
-                      if span.start <= position < span.end]
-            return colors[-1] if colors else None
-
-        self.assertIsNone(color_at("Mira Vale"))
-        self.assertIsNone(color_at("Rowan Frost"))
-        self.assertIsNone(color_at("First line"))
-        self.assertIsNone(color_at("Second line"))
-        self.assertIsNone(color_at("First again"))
-        self.assertIsNone(color_at(" in a normal line"))
-        self.assertIsNotNone(color_at("Solo line"))
-
-    def test_italics_do_not_split_joint_credit(self):
-        parser = play._GeniusLyricsParser()
-        parser.feed(
-            '<div data-lyrics-container="true">'
-            '[Verse: <em>Alex River</em> &amp; Casey Lane]'
-            '<br><em>Alex line</em><br>Casey line'
-            '</div>'
+        self.assertNotIn("\ue000", parser.text())
+        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
+        self.assertEqual(
+            self._rendered_color(rendered, "Khalid"),
+            self._rendered_color(rendered, "Both sing"),
         )
-        lyrics, italics = play._extract_lyric_italics(
-            play.Player._clean_lyrics_text(parser.marked_text())
+        self.assertIsNotNone(self._rendered_color(rendered, "Both sing"))
+
+    def test_word_count_can_make_joint_group_dominant_in_section(self):
+        lyrics = (
+            "[Pre-Chorus: Billie Eilish, Khalid & Billie Eilish]\n"
+            "Billie solo\n"
+            "Both singers carry this much longer shared passage"
         )
+        shared = "Both singers carry this much longer shared passage"
+        italics = [[], [], [[0, len(shared)]]]
         rendered = play._render_singer_lyrics(lyrics, italics)
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-        self.assertIsNone(color("Alex River"))
-        self.assertIsNone(color("Casey Lane"))
-        self.assertIsNone(color("Alex line"))
-        self.assertIsNone(color("Casey line"))
+        heading = lyrics.index("[Pre-Chorus:")
+        joint = lyrics.index("Khalid", heading)
 
-    def test_lead_stays_plain_and_unmarked_duet_colors_shared_lines(self):
+        solo_color = self._rendered_color(rendered, "Billie Eilish", heading)
+        self.assertIsNotNone(solo_color)
+        self.assertEqual(self._rendered_color(rendered, "Billie solo"), solo_color)
+        self.assertIsNone(self._rendered_color(rendered, "Khalid", heading))
+        self.assertIsNone(self._rendered_color(rendered, "Billie Eilish", joint))
+        self.assertIsNone(self._rendered_color(rendered, shared))
+
+    def test_dominant_group_is_calculated_again_for_each_section(self):
+        first_plain = "Solo singer owns most words in this section"
+        first_joint = "Together briefly"
+        second_plain = "Solo briefly"
+        second_joint = "Together they sing substantially more words in this section"
         lyrics = (
-            "[Verse 1: Casey Lane]\nMain verse one\nMain verse two\n"
-            "[Bridge: Casey Lane & Mira Vale]\nTogether here\nTogether again\n"
-            "[Chorus: Casey Lane]\nMain chorus"
+            "[Verse: Singer One, Singer Two & Singer One]\n"
+            f"{first_plain}\n{first_joint}\n"
+            "[Chorus: Singer One, Singer Two & Singer One]\n"
+            f"{second_plain}\n{second_joint}"
         )
-        rendered = play._render_singer_lyrics(lyrics, [])
-
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        self.assertIsNone(color("Casey Lane"))
-        self.assertIsNone(color("Main verse one"))
-        self.assertIsNone(color("Main chorus"))
-        self.assertIsNotNone(color("Mira Vale"))
-        self.assertEqual(color("Together here"), color("Together again"))
-        self.assertEqual(color("Together here"), color("Mira Vale"))
-
-    def test_unmarked_three_singer_section_uses_group_accent(self):
-        lyrics = (
-            "[Verse: Billie Eilish]\nLead solo\n"
-            "[Chorus: Khalid & Billie Eilish & Guest Singer]\nTogether now"
-        )
-        rendered = play._render_singer_lyrics(lyrics, [])
-
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        self.assertIsNone(color("Lead solo"))
-        group_color = color("Together now")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color("Khalid"), group_color)
-        self.assertEqual(color("Guest Singer"), group_color)
-
-    def test_joint_credit_colors_billie_separator_khalid_and_the_shared_line(self):
-        lyrics = (
-            "[Verse: Billie Eilish]\nBillie solo\n"
-            "[Chorus: Billie Eilish & Khalid]\nWe sing together"
-        )
-        rendered = play._render_singer_lyrics(lyrics, [])
-        chorus = lyrics.index("[Chorus:")
-
-        def color_at(position):
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        self.assertIsNone(color_at(lyrics.index("Billie Eilish")))
-        self.assertIsNone(color_at(lyrics.index("Billie solo")))
-        shared_color = color_at(lyrics.index("We sing together"))
-        self.assertIsNotNone(shared_color)
-        self.assertEqual(color_at(lyrics.index("Billie Eilish", chorus)), shared_color)
-        self.assertEqual(color_at(lyrics.index("&", chorus)), shared_color)
-        self.assertEqual(color_at(lyrics.index("Khalid", chorus)), shared_color)
-
-    def test_marked_duet_stays_one_group_identity(self):
-        lyrics = (
-            "[Verse: Billie Eilish]\nLead solo\n"
-            "[Chorus: Khalid & Billie Eilish]\nLead line\nKhalid line"
-        )
-        italics = [[], [], [], [], [[0, len("Khalid line")]]]
+        italics = [
+            [], [], [[0, len(first_joint)]],
+            [], [], [[0, len(second_joint)]],
+        ]
         rendered = play._render_singer_lyrics(lyrics, italics)
 
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
+        self.assertIsNone(self._rendered_color(rendered, first_plain))
+        first_joint_color = self._rendered_color(rendered, first_joint)
+        self.assertIsNotNone(first_joint_color)
+        second_solo_color = self._rendered_color(rendered, second_plain)
+        self.assertIsNotNone(second_solo_color)
+        self.assertIsNone(self._rendered_color(rendered, second_joint))
 
-        group_color = color("Khalid")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color("Lead line"), group_color)
-        self.assertEqual(color("Khalid line"), group_color)
-        chorus = lyrics.index("[Chorus:")
-        self.assertEqual(next((span.style for span in rendered.spans
-                              if span.start <= lyrics.index("&", chorus) < span.end), None),
-                         group_color)
-        self.assertEqual(next((span.style for span in rendered.spans
-                              if span.start <= lyrics.index("Billie Eilish", chorus) < span.end), None),
-                         group_color)
-
-    def test_italic_duet_colors_whole_group(self):
+    def test_partial_italic_range_colors_only_that_singer_groups_words(self):
+        line = "Billie sings many more solo words before both finish"
+        start = line.index("both")
         lyrics = (
-            "[Verse: Casey Lane]\nLead line one\nLead line two\n"
-            "[Bridge: Casey Lane & Mira Vale]\nLead bridge line\nGuest bridge line"
+            "[Bridge: Billie Eilish, Khalid & Billie Eilish]\n" + line
         )
-        italics = [[], [], [], [], [], [[0, 17]]]
+        italics = [[], [[start, len(line)]]]
         rendered = play._render_singer_lyrics(lyrics, italics)
 
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        group_color = color("Mira Vale")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color("Lead bridge line"), group_color)
-        self.assertEqual(color("Guest bridge line"), group_color)
-
-    def test_guest_first_bridge_stays_one_group_identity(self):
-        lyrics = (
-            "[Verse: Casey Lane]\nLead verse one\nLead verse two\n"
-            "[Bridge: Mira Vale & Casey Lane]\nLead words, guest words"
-        )
-        start = len("Lead words, ")
-        italics = [[], [], [], [], [[start, start + len("guest words")]]]
-        rendered = play._render_singer_lyrics(lyrics, italics)
-
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        group_color = color("Mira Vale")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(color("Lead words"), group_color)
-        self.assertEqual(color("guest words"), group_color)
-
-    def test_italicized_lead_credit_stays_one_group_identity(self):
-        parser = play._GeniusLyricsParser()
-        parser.feed(
-            '<div data-lyrics-container="true">'
-            '[Verse: Casey Lane]<br>Lead verse one<br>Lead verse two<br>'
-            '[Bridge: Mira Vale &amp; <i>Casey Lane</i>]'
-            '<br>Guest opening, <i>lead ending</i>'
-            '</div>'
-        )
-        lyrics, italics = play._extract_lyric_italics(
-            play.Player._clean_lyrics_text(parser.marked_text())
-        )
-        rendered = play._render_singer_lyrics(lyrics, italics)
-
-        def color(fragment):
-            position = rendered.plain.index(fragment)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        group_color = color("Mira Vale")
-        self.assertIsNotNone(group_color)
-        self.assertEqual(group_color, color("Guest opening"))
-        self.assertEqual(group_color, color("lead ending"))
-        self.assertIsNone(color("Casey Lane"))
-
-    def test_exact_joint_credit_is_one_identity_distinct_from_each_solo(self):
-        lyrics = (
-            "[Verse: Artist 1]\nArtist one solo\nArtist one again\n"
-            "[Verse: Artist 2]\nArtist two solo\n"
-            "[Chorus: Artist 1 & Artist 2]\nTwo together\n"
-            "[Bridge: Artist 2 & Artist 1]\nSame two reversed\n"
-            "[Outro: Artist 1 & Artist 2 & Artist 3]\nThree together"
-        )
-        rendered = play._render_singer_lyrics(lyrics, [])
-
-        def color_at(fragment, start=0):
-            position = lyrics.index(fragment, start)
-            return next((span.style for span in rendered.spans
-                         if span.start <= position < span.end), None)
-
-        solo_one = color_at("Artist one solo")
-        solo_two = color_at("Artist two solo")
-        duo_start = lyrics.index("[Chorus:")
-        duo = color_at("Artist 1", duo_start)
-        self.assertIsNotNone(solo_one)
-        self.assertIsNotNone(solo_two)
-        self.assertNotEqual(solo_one, solo_two)
-        self.assertIsNone(duo)
-        self.assertEqual(color_at("&", duo_start), duo)
-        self.assertEqual(color_at("Artist 2", duo_start), duo)
-        self.assertEqual(color_at("Two together"), duo)
-        self.assertEqual(color_at("Same two reversed"), duo)
-        trio_start = lyrics.index("[Outro:")
-        trio = color_at("Artist 1", trio_start)
-        self.assertIsNotNone(trio)
-        self.assertNotEqual(trio, duo)
-        self.assertNotEqual(trio, solo_one)
-        self.assertNotEqual(trio, solo_two)
-        self.assertEqual(color_at("Artist 2", trio_start), trio)
-        self.assertEqual(color_at("Artist 3", trio_start), trio)
-        self.assertEqual(color_at("Three together"), trio)
+        self.assertIsNone(self._rendered_color(rendered, "Billie sings"))
+        self.assertIsNotNone(self._rendered_color(rendered, "both finish"))
 
     def test_lyrics_filter_censors_swears_but_preserves_hell(self):
         player = play.Player.__new__(play.Player)

@@ -407,10 +407,14 @@ def _singer_identity_color(index):
 
 
 def _render_singer_lyrics(lyrics, italics):
-    """Color each exact solo or joint credit as one singer identity."""
-    # Keep the argument for existing cached Genius payloads. Italic spans no
-    # longer subdivide a joint credit because the full group is one identity.
-    _ = italics
+    """Color non-dominant Genius singer groups within each lyric section.
+
+    Genius separates alternate singer groups with commas in a section credit.
+    Ampersands stay inside a group: ``A, B & A`` means solo A plus the joint
+    B-and-A group.  In those multi-group sections, ordinary text belongs to
+    the first group and italic text belongs to the second.  The group covering
+    the most lyric words in that section remains the terminal's normal color.
+    """
     rendered = Text(lyrics)
     lines = lyrics.split("\n")
     heading = re.compile(
@@ -419,44 +423,51 @@ def _render_singer_lyrics(lyrics, italics):
     )
     sections = []
     first_seen = {}
-    section_counts = {}
 
-    # A joint credit is deliberately one identity. Sorting its members makes
-    # "A & B" and "B & A" the same group without merging either into A or B.
+    def identity_for(group):
+        # A joint credit is deliberately one identity. Sorting its members
+        # makes "A & B" and "B & A" the same group without merging it into
+        # either singer's solo identity.
+        members = [
+            member.strip().casefold()
+            for member in re.split(r"\s*(?:&|\band\b|/|\+)\s*", group, flags=re.I)
+            if member.strip()
+        ]
+        unique = tuple(sorted(set(members)))
+        return (("solo", unique[0]) if len(unique) == 1 else ("group", unique))
+
     for index, line in enumerate(lines):
         match = heading.match(line)
         if not match:
             continue
-        names = [
-            name.strip() for name in re.split(
-                r"\s*(?:,|&|\band\b|/|\+)\s*", match.group(1), flags=re.I
-            ) if name.strip()
-        ][:6]
-        if not names:
+        credit = match.group(1)
+        groups = []
+        for group_match in re.finditer(r"[^,]+", credit):
+            raw = group_match.group()
+            left = len(raw) - len(raw.lstrip())
+            right = len(raw.rstrip())
+            group = raw.strip()
+            if not group:
+                continue
+            identity = identity_for(group)
+            groups.append((
+                identity,
+                match.start(1) + group_match.start() + left,
+                match.start(1) + group_match.start() + right,
+            ))
+            first_seen.setdefault(identity, len(first_seen))
+        if not groups:
             continue
         end = index + 1
         while end < len(lines) and not (lines[end].startswith("[") and lines[end].endswith("]")):
             end += 1
-        members = tuple(sorted({name.casefold() for name in names}))
-        identity = (("solo", members[0]) if len(names) == 1
-                    else ("group", members))
-        sections.append((index, end, match.start(1), match.end(1), identity))
-        first_seen.setdefault(identity, len(first_seen))
-        section_counts[identity] = section_counts.get(identity, 0) + 1
+        sections.append((index, end, groups))
 
     if not first_seen:
         return rendered
-    # The exact credit used by the most section headings is the dominant
-    # identity and remains black. A group can therefore be dominant without
-    # being merged into any of its individual singers.
-    lead = max(first_seen, key=lambda identity: (
-        section_counts.get(identity, 0), -first_seen[identity]
-    ))
     colors = {
         identity: _singer_identity_color(index)
-        for index, identity in enumerate(
-            identity for identity in first_seen if identity != lead
-        )
+        for index, identity in enumerate(first_seen)
     }
     offsets = []
     offset = 0
@@ -464,21 +475,50 @@ def _render_singer_lyrics(lyrics, italics):
         offsets.append(offset)
         offset += len(line) + 1
 
-    for index, end, credit_start, credit_end, identity in sections:
-        color = colors.get(identity)
-        if color:
-            # Paint the entire exact credit, including every separator, as one
-            # unit. Genius italics no longer split a group into partial names.
-            rendered.stylize(
-                color,
-                offsets[index] + credit_start,
-                offsets[index] + credit_end,
-            )
+    word = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+    for index, end, groups in sections:
+        identities = [group[0] for group in groups]
+        counts = [0] * len(groups)
+        styled_segments = []
         for line_index in range(index + 1, end):
             line = lines[line_index]
-            if color and line.strip():
+            spans = italics[line_index] if line_index < len(italics) else []
+            boundaries = {0, len(line)}
+            clipped = []
+            for start, finish in spans:
+                start = max(0, min(len(line), start))
+                finish = max(start, min(len(line), finish))
+                if finish > start:
+                    clipped.append((start, finish))
+                    boundaries.update((start, finish))
+            points = sorted(boundaries)
+            for start, finish in zip(points, points[1:]):
+                if start == finish:
+                    continue
+                is_italic = any(left <= start and finish <= right for left, right in clipped)
+                group_index = 1 if is_italic and len(groups) > 1 else 0
+                counts[group_index] += len(word.findall(line[start:finish]))
+                styled_segments.append((line_index, start, finish, group_index))
+
+        # A tie goes to the first credited group, matching Genius's ordinary
+        # (non-italic) text. Groups beyond the two styles Genius exposes still
+        # get distinct heading colors instead of being merged at ampersands.
+        dominant = max(range(len(groups)), key=lambda group_index: (
+            counts[group_index], -group_index
+        ))
+        for group_index, (identity, credit_start, credit_end) in enumerate(groups):
+            if group_index != dominant:
                 rendered.stylize(
-                    color, offsets[line_index], offsets[line_index] + len(line)
+                    colors[identity],
+                    offsets[index] + credit_start,
+                    offsets[index] + credit_end,
+                )
+        for line_index, start, finish, group_index in styled_segments:
+            if group_index != dominant and lines[line_index][start:finish].strip():
+                rendered.stylize(
+                    colors[identities[group_index]],
+                    offsets[line_index] + start,
+                    offsets[line_index] + finish,
                 )
     return rendered
 
