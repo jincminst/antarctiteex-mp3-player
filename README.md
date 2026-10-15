@@ -94,7 +94,10 @@ lyrics leaves the playlist width alone.
 When lyrics are present, select **[Not the right lyrics?]** at the bottom of
 the sidebar to bypass the cached result, identify the recording through Shazam,
 and fetch the lyrics again with the recognized title and artist. Recognition
-runs in the background and its identity is cached; no local AI model is stored.
+runs three short samples from the early, middle, and later parts of a normal
+song, then combines compatible performer credits. This catches later guest
+verses without scanning the entire recording. It runs in the background and
+its identity is cached; no local AI model is stored.
 When an original and a remix have the same title and primary artist, the full
 Genius recording credits are compared with the Shazam identity so remix-only
 performers do not make the wrong page win.
