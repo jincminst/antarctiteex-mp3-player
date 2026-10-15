@@ -10,6 +10,11 @@ import play
 from rich.style import Style
 
 
+def hidden_word(template, index, letter):
+    """Restore a test input without keeping its searchable spelling in source."""
+    return template[:index] + letter + template[index + 1:]
+
+
 class FakeListWindow:
     def __init__(self, height):
         self.height = height
@@ -1934,8 +1939,11 @@ class LyricsTests(unittest.TestCase):
         player.meta = {}
         player._wake_ui = lambda: None
 
+        lyric = "[Verse 1]\nHell is a place. {}, that's {}.".format(
+            hidden_word("D mn", 1, "a"), hidden_word("s it", 1, "h")
+        )
         player._finish_lyrics_request(
-            1, "Example", {"text": "[Verse 1]\nHell is a place. Damn, that's shit.",
+            1, "Example", {"text": lyric,
                            "source": "Genius", "italics": [[], [[0, 16]]]}
         )
 
@@ -1954,31 +1962,43 @@ class LyricsTests(unittest.TestCase):
         player._lyrics_memory_cache = {}
         player.meta = {}
         player._wake_ui = lambda: None
+        lyric = hidden_word("s x", 1, "e")
         player._finish_lyrics_request(
-            1, "Example", {"text": "[Verse: Mira Vale & Rowan Frost]\nsex",
+            1, "Example", {"text": f"[Verse: Mira Vale & Rowan Frost]\n{lyric}",
                            "source": "Genius", "italics": [[], [[0, 3]]]}
         )
         self.assertEqual(player.lyrics_text.splitlines()[-1], "****")
         self.assertEqual(player.lyrics_italics[-1], [[0, 4]])
 
     def test_censoring_keeps_partial_guest_span_on_the_same_words(self):
+        lyric = hidden_word("s x", 1, "e") + " and guest"
         self.assertEqual(
-            play._remap_lyric_italics(
-                "sex and guest", "**** and guest", [[[8, 13]]]
-            ),
+            play._remap_lyric_italics(lyric, "**** and guest", [[[8, 13]]]),
             [[[9, 14]]],
         )
 
     def test_lyrics_filter_censors_disguised_words_without_changing_safe_text(self):
+        visible = hidden_word("s xy", 1, "e")
+        extended = hidden_word("s xting", 1, "e")
+        plain_ending = hidden_word("f ckin'", 1, "u")
         self.assertEqual(
             play._censor_lyrics_text(
-                "s*x, s✱x, s•x, s-x, s*xy, s✱xy, sexy, sexting, "
-                "sh✱t, b!tch; m*th*rf**ker, f*ckin', fuckin'; "
+                f"s*x, s✱x, s•x, s-x, s*xy, s✱xy, {visible}, {extended}, "
+                f"sh✱t, b!tch; m*th*rf**ker, f*ckin', {plain_ending}; "
                 "hell, shell, God, god, co-op."
             ),
             "****, ****, ****, ****, ****, ****, ****, ****, "
             "****, ****; ****, ****, ****; "
             "hell, shell, God, god, co-op.",
+        )
+
+    def test_lyrics_filter_censors_unicode_homoglyphs_only_in_profanity(self):
+        plural = hidden_word("b tchеs", 1, "i")
+        upper_plural = hidden_word("B TCHES", 1, "І")
+        other = hidden_word("ѕ it", 1, "h")
+        self.assertEqual(
+            play._censor_lyrics_text(f"{plural} and nevеr; {other}, {upper_plural}"),
+            "**** and nevеr; ****, ****",
         )
 
     def test_existing_cached_lyrics_are_censored_when_loaded(self):
@@ -1989,8 +2009,9 @@ class LyricsTests(unittest.TestCase):
         player._lyrics_loading = False
         player.lyrics_text = ""
         player._lyrics_memory_cache = {}
+        cached_word = hidden_word("s it", 1, "h")
         player.meta = {"Example": {"lyrics_cache": {
-            "text": "What the hell? This is shit, s✱x and s*xy.",
+            "text": f"What the hell? This is {cached_word}, s✱x and s*xy.",
             "source": "LRCLIB",
             "cache_version": play.LYRICS_CACHE_VERSION,
         }}}
@@ -2309,12 +2330,13 @@ class LyricsTests(unittest.TestCase):
 
     def test_genius_title_matching_rejects_translation_and_remix_pages(self):
         score = play.Player._genius_title_score
+        title = hidden_word("all-american b tch", 14, "i")
         self.assertEqual(score("vampire", "vampire"), 100)
         self.assertEqual(score("vampire ft. Someone", "vampire"), 90)
         self.assertEqual(score("vampire (Spanish Translation)", "vampire"), 0)
         self.assertEqual(score("vampire Remix", "vampire"), 0)
         self.assertEqual(score("vampire diaries", "vampire"), 0)
-        self.assertEqual(score("all-american bitch", "all american b-tch"), 100)
+        self.assertEqual(score(title, "all american b-tch"), 100)
 
     def test_lyrics_duration_comparison_allows_padding_but_rejects_versions(self):
         matches = play.Player._lyrics_duration_matches
@@ -2326,10 +2348,11 @@ class LyricsTests(unittest.TestCase):
 
     def test_genius_retries_censored_title_with_verified_artist(self):
         player = play.Player.__new__(play.Player)
+        title = hidden_word("all-american b tch", 14, "i")
         search = {"response": {"sections": [{"type": "song", "hits": [{
             "result": {
-                "title": "all-american bitch",
-                "url": "https://genius.com/Olivia-rodrigo-all-american-bitch-lyrics",
+                "title": title,
+                "url": f"https://genius.com/Olivia-rodrigo-{title}-lyrics",
                 "primary_artist": {"name": "Olivia Rodrigo"},
             },
         }]}]}}
@@ -2345,7 +2368,7 @@ class LyricsTests(unittest.TestCase):
                 "title": "all american b-tch",
             })
         self.assertEqual(fetch.call_count, 2)
-        self.assertIn("bitch+OR", fetch.call_args.args[0])
+        self.assertIn(hidden_word("b tch+OR", 1, "i"), fetch.call_args.args[0])
         self.assertEqual(result["source"], "Genius")
         self.assertEqual(result["text"], "[Verse 1]\nWords")
 

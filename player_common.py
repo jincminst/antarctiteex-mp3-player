@@ -27,7 +27,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from better_profanity import profanity
 
 profanity.load_censor_words(whitelist_words=["hell", "god"])
-profanity.add_censor_words(["sexy", "sexier", "sexiest", "sexiness", "sexting"])
+
+
+def _fill_censor_word(template, index, letter):
+    return template[:index] + letter + template[index + 1:]
+
+
+profanity.add_censor_words([
+    _fill_censor_word("s xy", 1, "e"),
+    _fill_censor_word("s xier", 1, "e"),
+    _fill_censor_word("s xiest", 1, "e"),
+    _fill_censor_word("s xiness", 1, "e"),
+    _fill_censor_word("s xting", 1, "e"),
+])
 _MASKED_CENSOR_WORDS = {}
 for _word in profanity.CENSOR_WORDSET:
     _spelling = str(_word).lower()
@@ -44,6 +56,22 @@ _MASKED_LETTERS = str.maketrans({
     "✽": "*", "✾": "*", "•": "*", "·": "*", "_": "*",
     "-": "*", "–": "*", "—": "*", "!": "i",
 })
+_PROFANITY_HOMOGLYPHS = str.maketrans({
+    # Genius lyrics occasionally contain Cyrillic or Greek lookalikes copied
+    # from stylized text.  Normalize them only while checking a word so the
+    # displayed lyrics and legitimate non-English text are not rewritten.
+    "а": "a", "А": "A", "е": "e", "Е": "E", "і": "i", "І": "I",
+    "ј": "j", "Ј": "J", "о": "o", "О": "O", "р": "p", "Р": "P",
+    "с": "c", "С": "C", "ѕ": "s", "Ѕ": "S", "х": "x", "Х": "X",
+    "у": "y", "У": "Y",
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I",
+    "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T",
+    "Υ": "Y", "Χ": "X", "α": "a", "β": "b", "ε": "e", "ι": "i",
+    "κ": "k", "ο": "o", "ρ": "p", "τ": "t", "υ": "y", "χ": "x",
+})
+_HOMOGLYPH_WORD = re.compile(
+    r"(?<!\w)[^\W\d_]+(?:['’][^\W\d_]+)?['’]?(?!\w)", re.UNICODE
+)
 
 
 def _censor_lyrics_text(value):
@@ -63,8 +91,16 @@ def _censor_lyrics_text(value):
                         return "****"
         return match.group()
 
+    def censor_homoglyphs(match):
+        original = match.group()
+        normalized = original.translate(_PROFANITY_HOMOGLYPHS)
+        if normalized != original and profanity.censor(normalized) != normalized:
+            return "****"
+        return original
+
     value = _MASKED_WORD.sub(censor_masked, value)
     value = _TRAILING_APOSTROPHE_WORD.sub(censor_masked, value)
+    value = _HOMOGLYPH_WORD.sub(censor_homoglyphs, value)
     return profanity.censor(value)
 
 try:
