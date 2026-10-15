@@ -2482,7 +2482,7 @@ class LyricsTests(unittest.TestCase):
             "source": "Shazam",
         })
 
-    def test_failed_directories_fall_back_to_shazam_then_retry(self):
+    def test_shazam_runs_before_directories_and_uses_recognized_identity(self):
         player = play.Player.__new__(play.Player)
         expected = {"text": "Correct words", "source": "Genius", "url": "url"}
         identity = {
@@ -2497,7 +2497,7 @@ class LyricsTests(unittest.TestCase):
         }
         with (
             mock.patch.object(
-                player, "_fetch_directory_lyrics", side_effect=[None, expected]
+                player, "_fetch_directory_lyrics", return_value=expected
             ) as directories,
             mock.patch.object(
                 player, "_recognize_audio_identity", return_value=identity
@@ -2509,11 +2509,33 @@ class LyricsTests(unittest.TestCase):
         self.assertIs(result, expected)
         recognize.assert_called_once_with("[LoL] Regenade (We Never Run)")
         remember.assert_called_once_with(metadata["library_name"], identity)
-        self.assertEqual(directories.call_count, 2)
-        corrected = directories.call_args_list[1].args[0]
+        directories.assert_called_once()
+        corrected = directories.call_args.args[0]
         self.assertEqual(corrected["artist"], identity["artist"])
         self.assertEqual(corrected["title"], identity["title"])
         self.assertEqual(corrected["artist_tag"], "")
+
+    def test_metadata_lookup_remains_fallback_when_shazam_cannot_identify(self):
+        player = play.Player.__new__(play.Player)
+        metadata = {
+            "artist": "Local Artist",
+            "title": "Local Song",
+            "library_name": "Local Song",
+        }
+        expected = {"text": "Local words", "source": "MP3 tags", "url": ""}
+        with (
+            mock.patch.object(
+                player, "_recognize_audio_identity", return_value=None
+            ) as recognize,
+            mock.patch.object(
+                player, "_fetch_directory_lyrics", return_value=expected
+            ) as directories,
+        ):
+            result = player._fetch_preferred_lyrics(metadata)
+
+        self.assertIs(result, expected)
+        recognize.assert_called_once_with("Local Song")
+        directories.assert_called_once_with(metadata)
 
     def test_forced_recognition_skips_existing_directory_match(self):
         player = play.Player.__new__(play.Player)

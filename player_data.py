@@ -1119,62 +1119,50 @@ class DataMixin:
         return recognized
 
     def _fetch_preferred_lyrics(self, metadata, force_recognition=False):
-        """Try lyric directories, then identify unknown audio as a fallback."""
-        initial_result = None
-        initial_error = None
-        if not force_recognition:
+        """Identify uncached audio with Shazam, then fetch exact-match lyrics."""
+        name = str(metadata.get("library_name") or "").strip()
+        already_recognized = metadata.get("identity_source") == "Shazam"
+        identity = None
+        recognition_error = None
+
+        # A saved fingerprint result is enough: use it to query the lyric
+        # providers without decoding or uploading another audio sample.
+        if not already_recognized or force_recognition:
             try:
-                initial_result = self._fetch_directory_lyrics(metadata)
+                identity = self._recognize_audio_identity(name)
             except Exception as exc:
-                initial_error = exc
-            if initial_result and initial_result.get("text"):
-                return initial_result
-            if metadata.get("identity_source") == "Shazam":
-                if initial_error:
-                    raise initial_error
-                return initial_result or {
+                recognition_error = exc
+
+        if identity:
+            self._remember_recognized_identity(name, identity)
+            metadata = self._metadata_with_recognized_identity(metadata, identity)
+            already_recognized = True
+
+        if force_recognition and not identity:
+            if recognition_error:
+                return {
                     "status": (
-                        f"Shazam identified {metadata.get('artist')} — "
-                        f"{metadata.get('title')}, but no matching lyrics "
-                        "were found."
+                        "Shazam recognition failed: "
+                        f"{str(recognition_error).strip() or 'unknown error'}"
                     )
                 }
+            return {"status": "Shazam could not identify this recording."}
 
-        name = str(metadata.get("library_name") or "").strip()
-        try:
-            identity = self._recognize_audio_identity(name)
-        except Exception as exc:
-            identity = None
-            recognition_error = exc
-        else:
-            recognition_error = None
-        if not identity:
-            if force_recognition:
-                if recognition_error:
-                    return {
-                        "status": (
-                            "Shazam recognition failed: "
-                            f"{str(recognition_error).strip() or 'unknown error'}"
-                        )
-                    }
-                return {"status": "Shazam could not identify this recording."}
-            if initial_error:
-                raise initial_error
-            return initial_result
-
-        self._remember_recognized_identity(name, identity)
-        recognized_metadata = self._metadata_with_recognized_identity(
-            metadata, identity
-        )
-        result = self._fetch_directory_lyrics(recognized_metadata)
+        # If Shazam is unavailable or cannot recognize the recording, retain
+        # the lightweight filename/tag path so local and unusual tracks can
+        # still obtain embedded or directory lyrics.
+        result = self._fetch_directory_lyrics(metadata)
         if result and result.get("text"):
             return result
-        return {
-            "status": (
-                f"Shazam identified {identity['artist']} — {identity['title']}, "
-                "but no matching lyrics were found."
-            )
-        }
+        if already_recognized:
+            return {
+                "status": (
+                    f"Shazam identified {metadata.get('artist')} — "
+                    f"{metadata.get('title')}, but no matching lyrics "
+                    "were found."
+                )
+            }
+        return result
 
     def _fetch_lrclib_lyrics(self, metadata):
         artist = metadata.get("artist", "").strip()
@@ -1309,7 +1297,7 @@ class DataMixin:
         return {"text": lyrics, "source": "LRCLIB", "url": "https://lrclib.net"}
 
     def request_lyrics(self, name, force_recognition=False):
-        """Load lyrics for a local song asynchronously, preferring MP3 tags."""
+        """Load cached lyrics or identify the local song before lookup."""
         if not name or name not in self._all_songs_set:
             self._lyrics_request_id += 1
             self.lyrics_song = ""
@@ -1329,8 +1317,17 @@ class DataMixin:
         self._lyrics_request_id += 1
         request_id = self._lyrics_request_id
         self.lyrics_song = name
+        entry = self.meta.get(name, {})
+        saved_identity = (
+            entry.get("recognized_identity") if isinstance(entry, dict) else None
+        )
         self.lyrics_status = (
-            "Recognizing song…" if force_recognition else "Finding lyrics…"
+            "Finding lyrics…"
+            if isinstance(saved_identity, dict)
+            and saved_identity.get("artist")
+            and saved_identity.get("title")
+            and not force_recognition
+            else "Recognizing song…"
         )
         self.lyrics_text = ""
         self.lyrics_italics = []
@@ -1339,7 +1336,6 @@ class DataMixin:
         self._lyrics_loading = True
 
         cached = None if force_recognition else self._lyrics_memory_cache.get(name)
-        entry = self.meta.get(name, {})
         if not cached and isinstance(entry, dict):
             saved = entry.get("lyrics_cache")
             if (
