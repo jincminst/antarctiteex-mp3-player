@@ -2205,6 +2205,51 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(score("vampire diaries", "vampire"), 0)
         self.assertEqual(score(title, "all american b-tch"), 100)
 
+    def test_genius_prefers_verified_english_translation(self):
+        player = play.Player.__new__(play.Player)
+        translation = {"response": {"sections": [{"type": "song", "hits": [{
+            "result": {
+                "title": (
+                    "Stromae & Pomme - Ma Meilleure Ennemie "
+                    "(English Translation)"
+                ),
+                "url": "https://genius.com/english-translation",
+                "primary_artist": {"name": "Genius English Translations"},
+                "artist_names": "Genius English Translations",
+            },
+        }, {
+            "result": {
+                "title": (
+                    "Stromae & Pomme - Ma Meilleure Ennemie "
+                    "(Polskie Tłumaczenie)"
+                ),
+                "url": "https://genius.com/polish-translation",
+                "primary_artist": {"name": "Polskie tłumaczenia Genius"},
+            },
+        }]}]}}
+        page = (
+            '<div data-lyrics-container="true">'
+            '[Verse: Stromae]<br>English words</div>'
+        )
+        with (
+            mock.patch.object(
+                player, "_search_genius", return_value=translation
+            ) as search,
+            mock.patch.object(player, "_fetch_text", return_value=page) as fetch,
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Stromae & Pomme",
+                "title": "Ma Meilleure Ennemie",
+                "prefer_english": True,
+            })
+
+        search.assert_called_once_with(
+            "Ma Meilleure Ennemie English Translation"
+        )
+        fetch.assert_called_once_with("https://genius.com/english-translation")
+        self.assertEqual(result["source"], "Genius (English translation)")
+        self.assertEqual(result["text"], "[Verse: Stromae]\nEnglish words")
+
     def test_lyrics_duration_comparison_allows_padding_but_rejects_versions(self):
         matches = play.Player._lyrics_duration_matches
 

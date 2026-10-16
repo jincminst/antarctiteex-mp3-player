@@ -80,7 +80,10 @@ use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
 replaying a song does not make another network request. Section headings
 supplied by the source, such as `[Verse]`, `[Chorus]`, and `[Bridge]`, remain
-visible. Genius's own singer formatting is translated directly for terminals:
+visible. The lookup prefers a verified Genius English Translation page for
+every song and falls back to the canonical page when no English translation
+exists. Other translation languages are rejected. Genius's own singer
+formatting is translated directly for terminals:
 normal lyrics keep the default text color, italic spans use one accent, and
 bold spans use another. The player does not infer singers from word counts or
 punctuation. Lyrics are censored

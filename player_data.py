@@ -648,6 +648,40 @@ class DataMixin:
             or ""
         ).strip()
 
+    @classmethod
+    def _genius_english_translation_matches(cls, result, wanted_title, known_artist):
+        """Verify a Genius English translation using its embedded song credit."""
+        if not isinstance(result, dict):
+            return False
+        candidate = str(
+            result.get("title") or result.get("full_title") or ""
+        ).strip()
+        normalized = cls._normalized_lyrics_identity(
+            candidate.replace("&", " and ")
+        )
+        if not normalized.endswith(" english translation"):
+            return False
+        wanted_variants = {
+            cls._normalized_lyrics_identity(
+                variant.replace("&", " and ")
+            )
+            for variant in cls._lyrics_title_variants(wanted_title)
+        }
+        if not any(
+            wanted and re.search(rf"\b{re.escape(wanted)}\b", normalized)
+            for wanted in wanted_variants
+        ):
+            return False
+        artist_parts = {
+            cls._normalized_lyrics_identity(part)
+            for part in cls._lyrics_artist_query_parts(known_artist)
+        }
+        return any(
+            part and len(part) >= 3
+            and re.search(rf"\b{re.escape(part)}\b", normalized)
+            for part in artist_parts
+        )
+
     @staticmethod
     def _lyrics_title_variants(title):
         """Try the usual missing vowels in a censored word such as b-tch."""
@@ -912,6 +946,25 @@ class DataMixin:
                 hits.extend(section.get("hits", []))
         return hits
 
+    def _fetch_genius_page_lyrics(self, page_url, source="Genius"):
+        """Extract lyrics and native singer formatting from one Genius page."""
+        try:
+            parser = _GeniusLyricsParser()
+            parser.feed(self._fetch_text(page_url))
+        except Exception:
+            return None
+        marked = self._clean_lyrics_text(parser.marked_text())
+        lyrics, italics, bold = _extract_lyric_styles(marked)
+        if not lyrics:
+            return None
+        return {
+            "text": lyrics,
+            "italics": italics,
+            "bold": bold,
+            "source": source,
+            "url": page_url,
+        }
+
     def _fetch_genius_lyrics(self, metadata):
         """Find the best exact-title Genius result for the known artist."""
         tag = str(metadata.get("artist_tag") or "").strip()
@@ -947,6 +1000,26 @@ class DataMixin:
                 }:
                     query_artists.append(query_artist)
 
+        if metadata.get("prefer_english"):
+            try:
+                english_payload = self._search_genius(
+                    f"{title} English Translation"
+                )
+            except Exception:
+                english_payload = {}
+            for hit in self._genius_song_hits(english_payload):
+                result = hit.get("result", {}) if isinstance(hit, dict) else {}
+                page_url = str(result.get("url") or "").strip()
+                if not page_url or not self._genius_english_translation_matches(
+                    result, title, known_artist or artist_hint
+                ):
+                    continue
+                translated = self._fetch_genius_page_lyrics(
+                    page_url, "Genius (English translation)"
+                )
+                if translated:
+                    return translated
+
         candidates = {}
         search_failed = False
         title_variants = self._lyrics_title_variants(title)
@@ -964,6 +1037,17 @@ class DataMixin:
                     candidate_title = str(
                         result.get("title") or result.get("full_title") or ""
                     )
+                    if (
+                        page_url
+                        and self._genius_english_translation_matches(
+                            result, title, known_artist or artist_hint
+                        )
+                    ):
+                        # Translation pages are credited to Genius English
+                        # Translations, so validate the original song and
+                        # artist embedded in the page title instead.
+                        candidates[page_url] = (1000, result)
+                        continue
                     title_score = self._genius_title_score(candidate_title, title)
                     artist_exact = self._lyrics_artist_matches(
                         artist, known_artist
@@ -1039,16 +1123,15 @@ class DataMixin:
         for page_url, (_score, _result) in sorted(
             candidates.items(), key=lambda item: item[1][0], reverse=True
         ):
-            try:
-                parser = _GeniusLyricsParser()
-                parser.feed(self._fetch_text(page_url))
-            except Exception:
-                continue
-            marked = self._clean_lyrics_text(parser.marked_text())
-            lyrics, italics, bold = _extract_lyric_styles(marked)
+            translated = self._genius_english_translation_matches(
+                _result, title, known_artist or artist_hint
+            )
+            lyrics = self._fetch_genius_page_lyrics(
+                page_url,
+                "Genius (English translation)" if translated else "Genius",
+            )
             if lyrics:
-                return {"text": lyrics, "italics": italics, "bold": bold,
-                        "source": "Genius", "url": page_url}
+                return lyrics
         return None
 
     def _infer_unique_lyrics_artist(self, title):
@@ -1109,6 +1192,8 @@ class DataMixin:
                 return {"status": status}
             metadata = dict(metadata)
             metadata["artist_hint"] = inferred_artist
+        metadata = dict(metadata)
+        metadata["prefer_english"] = True
         try:
             result = self._fetch_genius_lyrics(metadata)
         except Exception:
