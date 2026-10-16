@@ -731,7 +731,11 @@ if TEXTUAL_AVAILABLE:
         #lyrics-heading { width: 1fr; height: 3; content-align: left middle; text-style: bold; }
         #lyrics-close { width: 5; min-width: 5; max-width: 5; height: 3; padding: 0; border: none; content-align: center middle; }
         #lyrics-track { height: auto; max-height: 4; padding: 1 1 0 1; text-style: bold; }
-        #lyrics-source { height: 3; margin: 0 1; color: #555555; }
+        #lyrics-source-row { height: 3; padding: 0 1; align-vertical: middle; }
+        #lyrics-source-label { width: 8; height: 1; color: #555555; content-align: left middle; }
+        #lyrics-source { width: 1fr; height: 1; color: #333333; }
+        #lyrics-source > SelectCurrent { height: 1; padding: 0; text-style: underline; background: #fafaf7; }
+        #lyrics-source:focus > SelectCurrent { background: #fafaf7; background-tint: transparent; }
         #lyrics-scroll { height: 1fr; padding: 0 1 1 1; scrollbar-size: 1 1; }
         #lyrics-content { width: 100%; height: auto; padding-right: 1; }
         #lyrics-reidentify { display: none; width: auto; min-width: 1; height: 1; margin-top: 1; padding: 0; border: none; background: #fafaf7; color: #555555; text-style: underline; }
@@ -878,10 +882,12 @@ if TEXTUAL_AVAILABLE:
                         yield Static("LYRICS", id="lyrics-heading")
                         yield Button("×", id="lyrics-close")
                     yield Static("", id="lyrics-track")
-                    yield Select(
-                        [], prompt="Source", allow_blank=True,
-                        id="lyrics-source", compact=True,
-                    )
+                    with Horizontal(id="lyrics-source-row"):
+                        yield Static("Source:", id="lyrics-source-label")
+                        yield Select(
+                            [], prompt="None", allow_blank=True,
+                            id="lyrics-source", compact=True,
+                        )
                     with VerticalScroll(id="lyrics-scroll"):
                         yield Static("Finding lyrics…", id="lyrics-content")
                         yield Button(
@@ -1311,7 +1317,7 @@ if TEXTUAL_AVAILABLE:
             source_select = self.query_one("#lyrics-source", Select)
             source_options = tuple(
                 (
-                    "Genius — English translation"
+                    "Genius — English"
                     if item.get("source") == "Genius (English translation)"
                     else "Genius — Original"
                     if item.get("source") == "Genius"
