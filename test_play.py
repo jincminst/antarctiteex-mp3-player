@@ -2243,12 +2243,103 @@ class LyricsTests(unittest.TestCase):
                 "prefer_english": True,
             })
 
-        search.assert_called_once_with(
-            "Ma Meilleure Ennemie English Translation"
+        self.assertEqual(
+            [call.args[0] for call in search.call_args_list],
+            [
+                "Ma Meilleure Ennemie English Translation",
+                "Ma Meilleure Ennemie Stromae & Pomme",
+            ],
         )
         fetch.assert_called_once_with("https://genius.com/english-translation")
         self.assertEqual(result["source"], "Genius (English translation)")
         self.assertEqual(result["text"], "[Verse: Stromae]\nEnglish words")
+
+    def test_genius_returns_original_and_translation_for_source_dropdown(self):
+        player = play.Player.__new__(play.Player)
+        translated = {"response": {"hits": [{"result": {
+            "title": "Artist - Song (English Translation)",
+            "url": "https://genius.com/translated",
+            "primary_artist": {"name": "Genius English Translations"},
+            "artist_names": "Genius English Translations",
+        }}]}}
+        original = {"response": {"hits": [{"result": {
+            "title": "Song",
+            "url": "https://genius.com/original",
+            "primary_artist": {"name": "Artist"},
+            "artist_names": "Artist",
+        }}]}}
+        pages = {
+            "https://genius.com/translated": (
+                '<div data-lyrics-container="true">English words</div>'
+            ),
+            "https://genius.com/original": (
+                '<div data-lyrics-container="true">Original words</div>'
+            ),
+        }
+        with (
+            mock.patch.object(
+                player, "_search_genius", side_effect=[translated, original]
+            ),
+            mock.patch.object(player, "_fetch_text", side_effect=pages.get),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Artist", "title": "Song", "prefer_english": True,
+            })
+
+        self.assertEqual(result["url"], "https://genius.com/translated")
+        self.assertEqual(
+            [item["url"] for item in result["alternatives"]],
+            ["https://genius.com/translated", "https://genius.com/original"],
+        )
+
+    def test_genius_remembers_original_source_preference(self):
+        player = play.Player.__new__(play.Player)
+        translated = {"response": {"hits": [{"result": {
+            "title": "Artist - Song (English Translation)",
+            "url": "https://genius.com/translated",
+            "primary_artist": {"name": "Genius English Translations"},
+            "artist_names": "Genius English Translations",
+        }}]}}
+        original = {"response": {"hits": [{"result": {
+            "title": "Song", "url": "https://genius.com/original",
+            "primary_artist": {"name": "Artist"}, "artist_names": "Artist",
+        }}]}}
+        page = '<div data-lyrics-container="true">Words</div>'
+        with (
+            mock.patch.object(
+                player, "_search_genius", side_effect=[translated, original]
+            ),
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Artist", "title": "Song", "prefer_english": True,
+                "lyrics_source_preference": "original",
+            })
+
+        self.assertEqual(result["url"], "https://genius.com/original")
+
+    def test_selecting_lyrics_source_persists_song_and_global_preference(self):
+        player = play.Player.__new__(play.Player)
+        player.lyrics_song = "Song"
+        player._all_songs_set = {"Song"}
+        player.meta = {"Song": {}}
+        player._lyrics_memory_cache = {}
+        player._meta_dirty = False
+        player._wake_ui = lambda: None
+        player._save_cache = mock.Mock()
+        player.lyrics_sources = [
+            {"text": "English", "source": "Genius (English translation)",
+             "url": "translated", "italics": [], "bold": []},
+            {"text": "Original", "source": "Genius", "url": "original",
+             "italics": [], "bold": []},
+        ]
+
+        self.assertTrue(player.select_lyrics_source("original"))
+
+        self.assertEqual(player.lyrics_text, "Original")
+        self.assertEqual(player.meta["Song"]["lyrics_selected_url"], "original")
+        self.assertEqual(player.lyrics_source_preference, "original")
+        player._save_cache.assert_called_once_with()
 
     def test_lyrics_duration_comparison_allows_padding_but_rejects_versions(self):
         matches = play.Player._lyrics_duration_matches
@@ -3240,6 +3331,50 @@ class TextualLayoutRegressionTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.click("#lyrics-reidentify")
                     request.assert_called_once_with(
                         "Mystery", force_recognition=True
+                    )
+
+    async def test_lyrics_source_dropdown_switches_and_remembers_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "Song.mp3").touch()
+            with mock.patch.object(play.Player, "start_background_services"):
+                app = play.MusicApp(folder)
+                async with app.run_test(size=(120, 28)) as pilot:
+                    player = app.player
+                    player.current = "Song"
+                    player._playback_id += 1
+                    app._lyrics_enabled = True
+                    app._lyrics_requested_token = ("Song", player._playback_id)
+                    player.lyrics_song = "Song"
+                    player.lyrics_text = "English words"
+                    player.lyrics_status = ""
+                    player.lyrics_source = "Genius (English translation)"
+                    player.lyrics_source_url = "translated"
+                    player.lyrics_sources = [
+                        {"text": "English words",
+                         "source": "Genius (English translation)",
+                         "url": "translated", "italics": [], "bold": []},
+                        {"text": "Original words", "source": "Genius",
+                         "url": "original", "italics": [], "bold": []},
+                    ]
+                    player._lyrics_loading = False
+                    app._lyrics_render_state = None
+                    app._sync_lyrics_panel()
+                    await pilot.pause()
+
+                    source = app.query_one("#lyrics-source", play.Select)
+                    self.assertFalse(source.disabled)
+                    self.assertEqual(source.value, "translated")
+                    source.value = "original"
+                    await pilot.pause()
+
+                    self.assertEqual(player.lyrics_text, "Original words")
+                    self.assertEqual(
+                        player.meta["Song"]["lyrics_selected_url"], "original"
+                    )
+                    self.assertEqual(player.lyrics_source_preference, "original")
+                    self.assertIn(
+                        "Original words",
+                        str(app.query_one("#lyrics-content").render()),
                     )
 
     async def test_new_song_lyrics_start_at_top_without_interrupting_manual_scroll(self):

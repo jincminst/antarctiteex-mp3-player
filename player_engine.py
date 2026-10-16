@@ -212,6 +212,11 @@ class Player(
         self.lyrics_bold = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
+        self.lyrics_sources = []
+        preference = settings.get("lyrics_source_preference", "english")
+        self.lyrics_source_preference = (
+            preference if preference in {"english", "original"} else "english"
+        )
         self._lyrics_loading = False
         self._lyrics_request_id = 0
         self._lyrics_memory_cache = {}

@@ -731,7 +731,7 @@ if TEXTUAL_AVAILABLE:
         #lyrics-heading { width: 1fr; height: 3; content-align: left middle; text-style: bold; }
         #lyrics-close { width: 5; min-width: 5; max-width: 5; height: 3; padding: 0; border: none; content-align: center middle; }
         #lyrics-track { height: auto; max-height: 4; padding: 1 1 0 1; text-style: bold; }
-        #lyrics-source { height: 2; padding: 0 1; color: #777777; }
+        #lyrics-source { height: 3; margin: 0 1; color: #555555; }
         #lyrics-scroll { height: 1fr; padding: 0 1 1 1; scrollbar-size: 1 1; }
         #lyrics-content { width: 100%; height: auto; padding-right: 1; }
         #lyrics-reidentify { display: none; width: auto; min-width: 1; height: 1; margin-top: 1; padding: 0; border: none; background: #fafaf7; color: #555555; text-style: underline; }
@@ -820,6 +820,7 @@ if TEXTUAL_AVAILABLE:
             self._lyrics_width = None
             self._playlist_width = None
             self._lyrics_render_state = None
+            self._lyrics_source_options = None
             self._playlist_sync_state = None
             self._tick_timer = None
 
@@ -877,7 +878,10 @@ if TEXTUAL_AVAILABLE:
                         yield Static("LYRICS", id="lyrics-heading")
                         yield Button("×", id="lyrics-close")
                     yield Static("", id="lyrics-track")
-                    yield Static("", id="lyrics-source")
+                    yield Select(
+                        [], prompt="Source", allow_blank=True,
+                        id="lyrics-source", compact=True,
+                    )
                     with VerticalScroll(id="lyrics-scroll"):
                         yield Static("Finding lyrics…", id="lyrics-content")
                         yield Button(
@@ -1293,6 +1297,10 @@ if TEXTUAL_AVAILABLE:
                 p._lyrics_loading,
                 id(p.lyrics_italics),
                 id(p.lyrics_bold),
+                tuple(
+                    (item.get("source", ""), item.get("url", ""))
+                    for item in p.lyrics_sources
+                ),
             )
             if render_state == self._lyrics_render_state:
                 return
@@ -1300,17 +1308,29 @@ if TEXTUAL_AVAILABLE:
             self.query_one("#lyrics-track", Static).update(
                 Text(name or "No local song playing")
             )
-            source = Text()
-            if p.lyrics_source:
-                source.append("Source: ")
-                if p.lyrics_source_url:
-                    source.append(
-                        p.lyrics_source,
-                        style=f"underline link {p.lyrics_source_url}",
-                    )
-                else:
-                    source.append(p.lyrics_source)
-            self.query_one("#lyrics-source", Static).update(source)
+            source_select = self.query_one("#lyrics-source", Select)
+            source_options = tuple(
+                (
+                    "Genius — English translation"
+                    if item.get("source") == "Genius (English translation)"
+                    else "Genius — Original"
+                    if item.get("source") == "Genius"
+                    else item.get("source", "Lyrics"),
+                    item.get("url", ""),
+                )
+                for item in p.lyrics_sources
+            )
+            if source_options != self._lyrics_source_options:
+                self._lyrics_source_options = source_options
+                source_select.set_options(source_options)
+            source_select.display = bool(source_options)
+            source_select.disabled = len(source_options) < 2
+            option_values = {value for _label, value in source_options}
+            if (
+                p.lyrics_source_url in option_values
+                and source_select.value != p.lyrics_source_url
+            ):
+                source_select.value = p.lyrics_source_url
             content = (
                 p.lyrics_text or p.lyrics_status
                 or ("Finding lyrics…" if name else "Play a local MP3 to see lyrics.")
@@ -2130,6 +2150,17 @@ if TEXTUAL_AVAILABLE:
             elif button_id.startswith("new-playlist-"): self.action_new_playlist()
             elif button_id == "cancel": self.cancel_current_mode()
             self.refresh_ui()
+
+        def on_select_changed(self, event):
+            if event.select.id != "lyrics-source" or not self.player:
+                return
+            value = event.value
+            if value is Select.NULL or value == self.player.lyrics_source_url:
+                return
+            if self.player.select_lyrics_source(value):
+                self._lyrics_render_state = None
+                self._lyrics_scrolled_token = None
+                self._sync_lyrics_panel()
 
         def on_playlist_button_context_requested(self, event):
             button_id = event.button.id

@@ -247,6 +247,9 @@ class DataMixin:
                 "settings": {
                     **previous_settings,
                     "show_tags": getattr(self, "show_tags", True),
+                    "lyrics_source_preference": getattr(
+                        self, "lyrics_source_preference", "english"
+                    ),
                     "artist_hints": getattr(self, "artist_hints", {}).copy(),
                     "layout": getattr(self, "layout_widths", {}).copy(),
                     "session": self._session_snapshot(),
@@ -1000,6 +1003,7 @@ class DataMixin:
                 }:
                     query_artists.append(query_artist)
 
+        translations = []
         if metadata.get("prefer_english"):
             try:
                 english_payload = self._search_genius(
@@ -1018,7 +1022,8 @@ class DataMixin:
                     page_url, "Genius (English translation)"
                 )
                 if translated:
-                    return translated
+                    translations.append(translated)
+                    break
 
         candidates = {}
         search_failed = False
@@ -1120,19 +1125,51 @@ class DataMixin:
                 if candidates:
                     break
 
+        original = None
         for page_url, (_score, _result) in sorted(
             candidates.items(), key=lambda item: item[1][0], reverse=True
         ):
             translated = self._genius_english_translation_matches(
                 _result, title, known_artist or artist_hint
             )
+            if translated and any(
+                item.get("url") == page_url for item in translations
+            ):
+                continue
             lyrics = self._fetch_genius_page_lyrics(
                 page_url,
                 "Genius (English translation)" if translated else "Genius",
             )
             if lyrics:
-                return lyrics
-        return None
+                if translated:
+                    translations.append(lyrics)
+                else:
+                    original = lyrics
+                    break
+
+        options = translations + ([original] if original else [])
+        if not options:
+            return None
+        selected_url = str(metadata.get("lyrics_selected_url") or "")
+        selected = next(
+            (item for item in options if item.get("url") == selected_url), None
+        )
+        if selected is None:
+            preference = str(
+                metadata.get("lyrics_source_preference") or "english"
+            )
+            wanted_translation = preference != "original"
+            selected = next(
+                (
+                    item for item in options
+                    if ("translation" in item.get("source", "").casefold())
+                    == wanted_translation
+                ),
+                options[0],
+            )
+        selected = dict(selected)
+        selected["alternatives"] = options
+        return selected
 
     def _infer_unique_lyrics_artist(self, title):
         """Infer an artist only when exact-title Genius results all agree."""
@@ -1194,6 +1231,15 @@ class DataMixin:
             metadata["artist_hint"] = inferred_artist
         metadata = dict(metadata)
         metadata["prefer_english"] = True
+        library_name = str(metadata.get("library_name") or "")
+        entry = self.meta.get(library_name, {}) if library_name else {}
+        if isinstance(entry, dict):
+            metadata["lyrics_selected_url"] = str(
+                entry.get("lyrics_selected_url") or ""
+            )
+        metadata["lyrics_source_preference"] = getattr(
+            self, "lyrics_source_preference", "english"
+        )
         try:
             result = self._fetch_genius_lyrics(metadata)
         except Exception:
@@ -1469,6 +1515,7 @@ class DataMixin:
             self.lyrics_bold = []
             self.lyrics_source = ""
             self.lyrics_source_url = ""
+            self.lyrics_sources = []
             self._lyrics_loading = False
             return
         if (
@@ -1497,6 +1544,7 @@ class DataMixin:
         self.lyrics_bold = []
         self.lyrics_source = ""
         self.lyrics_source_url = ""
+        self.lyrics_sources = []
         self._lyrics_loading = True
 
         cached = None if force_recognition else self._lyrics_memory_cache.get(name)
@@ -1553,6 +1601,7 @@ class DataMixin:
             self.lyrics_bold = []
             self.lyrics_source = ""
             self.lyrics_source_url = ""
+            self.lyrics_sources = []
             self._lyrics_loading = False
             changed = True
         return changed
@@ -1562,20 +1611,41 @@ class DataMixin:
             return
         self._lyrics_loading = False
         if result and result.get("text"):
-            clean_text = self._clean_lyrics_text(result.get("text"))
-            censored_text = _censor_lyrics_text(clean_text)
-            italics = _remap_lyric_italics(
-                clean_text, censored_text, result.get("italics") or []
+            raw_options = result.get("alternatives") or [result]
+            options = []
+            seen_urls = set()
+            for option in raw_options:
+                if not isinstance(option, dict) or not option.get("text"):
+                    continue
+                clean_text = self._clean_lyrics_text(option.get("text"))
+                censored_text = _censor_lyrics_text(clean_text)
+                url = str(option.get("url") or "")
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                options.append({
+                    "text": censored_text,
+                    "source": str(option.get("source") or "Lyrics"),
+                    "url": url,
+                    "italics": _remap_lyric_italics(
+                        clean_text, censored_text, option.get("italics") or []
+                    ),
+                    "bold": _remap_lyric_italics(
+                        clean_text, censored_text, option.get("bold") or []
+                    ),
+                })
+            wanted_url = str(result.get("url") or "")
+            active = next(
+                (item for item in options if item["url"] == wanted_url),
+                options[0] if options else None,
             )
-            bold = _remap_lyric_italics(
-                clean_text, censored_text, result.get("bold") or []
-            )
+            if active is None:
+                self.lyrics_status = "Lyrics provider returned an empty result."
+                self._wake_ui()
+                return
             result = {
-                "text": censored_text,
-                "source": str(result.get("source") or "Lyrics"),
-                "url": str(result.get("url") or ""),
-                "italics": italics,
-                "bold": bold,
+                **active,
+                "alternatives": options,
                 "cache_version": LYRICS_CACHE_VERSION,
             }
             self._lyrics_memory_cache[name] = result
@@ -1584,6 +1654,7 @@ class DataMixin:
             self.lyrics_bold = result["bold"]
             self.lyrics_source = result["source"]
             self.lyrics_source_url = result["url"]
+            self.lyrics_sources = options
             self.lyrics_status = ""
             entry = self._meta_dict(name)
             entry["lyrics_cache"] = result
@@ -1607,3 +1678,36 @@ class DataMixin:
                 else:
                     self.lyrics_status = "Lyrics lookup failed. Try this song again."
         self._wake_ui()
+
+    def select_lyrics_source(self, url):
+        """Activate and persist one of the fetched lyric versions."""
+        url = str(url or "")
+        option = next(
+            (item for item in self.lyrics_sources if item.get("url") == url), None
+        )
+        name = self.lyrics_song
+        if option is None or name not in self._all_songs_set:
+            return False
+        self.lyrics_text = option["text"]
+        self.lyrics_italics = option.get("italics", [])
+        self.lyrics_bold = option.get("bold", [])
+        self.lyrics_source = option.get("source", "Lyrics")
+        self.lyrics_source_url = option.get("url", "")
+        result = {
+            **option,
+            "alternatives": self.lyrics_sources,
+            "cache_version": LYRICS_CACHE_VERSION,
+        }
+        self._lyrics_memory_cache[name] = result
+        entry = self._meta_dict(name)
+        entry["lyrics_cache"] = result
+        entry["lyrics_selected_url"] = self.lyrics_source_url
+        if self.lyrics_source.startswith("Genius"):
+            self.lyrics_source_preference = (
+                "english" if "translation" in self.lyrics_source.casefold()
+                else "original"
+            )
+        self._meta_dirty = True
+        self._save_cache()
+        self._wake_ui()
+        return True

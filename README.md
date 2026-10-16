@@ -90,6 +90,9 @@ punctuation. Lyrics are censored
 with better-profanity,
 including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
 stay visible.
+The source row becomes a dropdown when Genius has both an original page and a
+verified English translation. Your choice is saved for that MP3, and choosing
+original or English also becomes the default for other songs that offer both.
 Drag the sidebar's left edge to resize it. Playlist and lyrics widths are saved
 in `.mp3cache.json` and restored the next time you open the player. Resizing
 lyrics leaves the playlist width alone.

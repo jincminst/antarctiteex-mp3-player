@@ -148,7 +148,7 @@ try:
     from textual.geometry import Offset
     from textual.message import Message
     from textual.screen import ModalScreen
-    from textual.widgets import Button, DataTable, Input, Label, Static
+    from textual.widgets import Button, DataTable, Input, Label, Select, Static
     from rich.text import Text
     TEXTUAL_AVAILABLE = True
 except ImportError:
@@ -223,7 +223,7 @@ LYRICS_API_URL = "https://lrclib.net/api"
 GENIUS_SEARCH_URL = "https://genius.com/api/search/multi"
 GENIUS_OFFICIAL_SEARCH_URL = "https://api.genius.com/search"
 LYRICS_HTTP_TIMEOUT_S = 8
-LYRICS_CACHE_VERSION = 13
+LYRICS_CACHE_VERSION = 14
 RECOGNITION_CACHE_STRATEGY = "recording-fingerprint-v1"
 _ITALIC_START = "\ue000"
 _ITALIC_END = "\ue001"
