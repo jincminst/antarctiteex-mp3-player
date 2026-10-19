@@ -472,6 +472,24 @@ class OnlineMixin:
             return url
         return f"{url}/videos"
 
+    def _youtube_channel_playlists_target(self, result_or_url):
+        """Return the lightweight playlists tab for a channel URL."""
+        if isinstance(result_or_url, dict):
+            url = self._youtube_channel_target(result_or_url)
+        else:
+            url = str(result_or_url or "").strip()
+        if not url:
+            return ""
+        parsed = urllib.parse.urlsplit(url)
+        path = parsed.path.rstrip("/")
+        for tab in ("/videos", "/playlists"):
+            if path.endswith(tab):
+                path = path[:-len(tab)]
+                break
+        return urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, f"{path}/playlists", "", "")
+        )
+
     @staticmethod
     def _youtube_abs_url(url):
         url = str(url or "").strip()
@@ -1227,8 +1245,8 @@ class OnlineMixin:
 
     def _youtube_result_header_title(self, width):
         if self._youtube_view == "channel" and self._youtube_channel_title:
-            title = self._truncate(self._youtube_channel_title, max(1, width - 7))
-            return f"{title} Videos"
+            title = self._truncate(self._youtube_channel_title, max(1, width - 17))
+            return f"{title} Videos + Playlists"
         return "YouTube Result"
 
     def _start_youtube_stats_enrichment(self, query, results):
@@ -1908,6 +1926,7 @@ class OnlineMixin:
 
     def _open_youtube_channel(self, result):
         target = self._youtube_channel_videos_target(result)
+        playlists_target = self._youtube_channel_playlists_target(result)
         title = result.get("title", "Channel") if isinstance(result, dict) else "Channel"
         if not target:
             self.status_msg = "Could not open YouTube channel"
@@ -1933,7 +1952,7 @@ class OnlineMixin:
             visible_results = self.youtube_results[: self._youtube_result_limit()]
             if self._youtube_stats_missing(visible_results):
                 self._start_youtube_stats_enrichment(cache_key, visible_results)
-            self.status_msg = f"{len(self.youtube_results)} videos from {title}"
+            self.status_msg = f"{len(self.youtube_results)} items from {title}"
             self._needs_redraw_hdr = True
             self._needs_redraw_tabs = True
             self._needs_redraw_lst = True
@@ -1948,7 +1967,7 @@ class OnlineMixin:
         self._youtube_results_loading = True
         self._youtube_stats_loading = False
         self.youtube_results = []
-        self.status_msg = f"Loading channel videos: {title}"
+        self.status_msg = f"Loading channel videos and playlists: {title}"
         self._pending_youtube_search_result = None
         self._pending_youtube_search_error = None
         self._needs_redraw_hdr = True
@@ -1958,27 +1977,47 @@ class OnlineMixin:
 
         def worker():
             try:
-                base_args = (
+                video_args = (
                     "--flat-playlist",
                     "--dump-single-json",
                     "--playlist-end",
                     str(self._youtube_result_limit()),
                     target,
                 )
-                if request_id != self._youtube_search_request_id:
+                data = self._run_youtube_search_json(request_id, *video_args)
+                if data is None:
                     return
-                proc = self._run_ytdlp_capture_with_cookie_retry(
-                    lambda use_cookies: self._yt_dlp_cmd(
-                        *base_args, use_cookies=use_cookies
-                    ),
-                    "_youtube_search_proc",
-                    timeout=YT_SEARCH_TIMEOUT_S,
-                )
-                if proc.returncode != 0:
-                    raise RuntimeError(self._yt_dlp_error(proc))
-                data = json.loads(proc.stdout)
                 entries = data.get("entries", []) if isinstance(data, dict) else []
-                results = self._extract_youtube_channel_videos(entries)
+                videos = self._extract_youtube_channel_videos(entries)
+                playlists = []
+                if playlists_target:
+                    try:
+                        playlist_limit = self._youtube_result_limit()
+                        playlist_args = (
+                            "--flat-playlist",
+                            "--dump-single-json",
+                            "--playlist-end",
+                            str(playlist_limit),
+                            playlists_target,
+                        )
+                        playlist_data = self._run_youtube_search_json(
+                            request_id, *playlist_args
+                        )
+                        if playlist_data is None:
+                            return
+                        playlist_entries = (
+                            playlist_data.get("entries", [])
+                            if isinstance(playlist_data, dict)
+                            else []
+                        )
+                        playlists = self._extract_youtube_playlist_results(
+                            playlist_entries, playlist_limit
+                        )
+                    except Exception:
+                        # Some channels hide or disable their Playlists tab.
+                        # Their videos should still remain usable.
+                        playlists = []
+                results = self._merge_youtube_results(playlists, videos)
                 self._pending_youtube_search_result = (
                     request_id,
                     cache_key,

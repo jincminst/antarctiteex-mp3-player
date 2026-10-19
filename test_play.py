@@ -1399,6 +1399,112 @@ class PureHelperTests(unittest.TestCase):
             player._youtube_channel_videos_target("https://youtube.com/@music"),
             "https://youtube.com/@music/videos",
         )
+        self.assertEqual(
+            player._youtube_channel_playlists_target(
+                "https://youtube.com/@music/videos"
+            ),
+            "https://youtube.com/@music/playlists",
+        )
+
+    def test_open_youtube_channel_loads_playlists_and_videos(self):
+        player = bare_player(visible=5)
+        player._youtube_search_request_id = 0
+        player._youtube_stats_request_id = 0
+        player._youtube_search_proc = None
+        player._youtube_search_cache = {}
+        player._youtube_view = "search"
+        player._youtube_channel_title = ""
+        player._youtube_channel_url = ""
+        player._youtube_results_query = ""
+        player._youtube_results_loading = False
+        player._youtube_stats_loading = False
+        player._pending_youtube_search_result = None
+        player._pending_youtube_search_error = None
+        player._needs_redraw_hdr = False
+        player._needs_redraw_tabs = False
+        player.youtube_sort_mode = "title"
+        player.youtube_sort_reverse = False
+        video_data = {"entries": [{
+            "id": "video1", "title": "A Video", "channel": "Example",
+        }]}
+        playlist_data = {"entries": [{
+            "_type": "url", "ie_key": "YoutubeTab", "id": "PL123",
+            "title": "Album Playlist",
+            "url": "https://www.youtube.com/playlist?list=PL123",
+            "channel": "Example",
+        }]}
+
+        def run_thread_now(*, target, daemon):
+            thread = mock.Mock()
+            thread.start.side_effect = target
+            return thread
+
+        with (
+            mock.patch.object(player, "_yt_dlp_available", return_value=True),
+            mock.patch.object(player, "_terminate_proc"),
+            mock.patch.object(
+                player, "_run_youtube_search_json",
+                side_effect=[video_data, playlist_data],
+            ) as fetch,
+            mock.patch.object(play.threading, "Thread", side_effect=run_thread_now),
+        ):
+            opened = player._open_youtube_channel({
+                "kind": "channel", "title": "Example",
+                "url": "https://www.youtube.com/@example",
+            })
+
+        self.assertTrue(opened)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(fetch.call_args_list[0].args[-1],
+                         "https://www.youtube.com/@example/videos")
+        self.assertEqual(fetch.call_args_list[1].args[-1],
+                         "https://www.youtube.com/@example/playlists")
+        _request, _cache, results = player._pending_youtube_search_result
+        self.assertEqual([item["kind"] for item in results], ["playlist", "video"])
+        self.assertEqual(results[0]["title"], "Album Playlist")
+
+    def test_channel_playlist_failure_keeps_channel_videos(self):
+        player = bare_player(visible=5)
+        player._youtube_search_request_id = 0
+        player._youtube_stats_request_id = 0
+        player._youtube_search_proc = None
+        player._youtube_search_cache = {}
+        player._youtube_view = "search"
+        player._youtube_channel_title = ""
+        player._youtube_channel_url = ""
+        player._youtube_results_query = ""
+        player._youtube_results_loading = False
+        player._youtube_stats_loading = False
+        player._pending_youtube_search_result = None
+        player._pending_youtube_search_error = None
+        player._needs_redraw_hdr = False
+        player._needs_redraw_tabs = False
+        player.youtube_sort_mode = "title"
+        player.youtube_sort_reverse = False
+        video_data = {"entries": [{"id": "video1", "title": "Still Here"}]}
+
+        def run_thread_now(*, target, daemon):
+            thread = mock.Mock()
+            thread.start.side_effect = target
+            return thread
+
+        with (
+            mock.patch.object(player, "_yt_dlp_available", return_value=True),
+            mock.patch.object(player, "_terminate_proc"),
+            mock.patch.object(
+                player, "_run_youtube_search_json",
+                side_effect=[video_data, RuntimeError("playlists hidden")],
+            ),
+            mock.patch.object(play.threading, "Thread", side_effect=run_thread_now),
+        ):
+            player._open_youtube_channel({
+                "kind": "channel", "title": "Example",
+                "url": "https://www.youtube.com/@example",
+            })
+
+        self.assertIsNone(player._pending_youtube_search_error)
+        results = player._pending_youtube_search_result[2]
+        self.assertEqual([item["title"] for item in results], ["Still Here"])
 
     def test_bare_youtube_id_targets_only_that_video(self):
         player = bare_player()

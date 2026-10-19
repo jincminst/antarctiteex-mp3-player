@@ -17,6 +17,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Play Count, Listening Time, Duration, and Last-Played Tracking
 - Library Sorting by Name, Play Time, Plays, Duration, or Last Played
 - YouTube Video, Channel, and Playlist Search and Preview
+- Channel Browsing with Both Video and Playlist Rows
 - YouTube Audio Downloads with Pre-Save Renaming and Live Progress
 - Sequential YouTube Playlist Previews with Automatic Temporary-File Cleanup
 - YouTube Sorting by Title, Channel, Views, or Likes
