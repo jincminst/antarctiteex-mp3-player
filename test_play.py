@@ -2793,6 +2793,12 @@ class LyricsTests(unittest.TestCase):
             ),
             "Enemy",
         )
+        self.assertEqual(
+            play.Player._clean_recognized_title(
+                "孤勇者 (《英雄聯盟:雙城之戰》動畫劇集中文主題曲)"
+            ),
+            "孤勇者",
+        )
         player = play.Player.__new__(play.Player)
         with tempfile.TemporaryDirectory() as folder:
             player.folder = folder
@@ -2919,6 +2925,64 @@ class LyricsTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "Renegade (We Never Run)")
         self.assertEqual(metadata["artist_tag"], "")
         self.assertEqual(metadata["identity_source"], "Shazam")
+
+    def test_cached_shazam_identity_migrates_soundtrack_suffix(self):
+        player = play.Player.__new__(play.Player)
+        player.folder = "/missing"
+        player._meta_dirty = False
+        player.meta = {"[LoL] Lonely Warrior": {
+            "recognized_identity": {
+                "artist": "Eason Chan",
+                "title": "孤勇者 (《英雄聯盟:雙城之戰》動畫劇集中文主題曲)",
+                "source": "Shazam",
+                "strategy": play.RECOGNITION_CACHE_STRATEGY,
+            }
+        }}
+        with mock.patch.object(play.shutil, "which", return_value=None):
+            metadata = player._read_audio_lyrics_metadata("[LoL] Lonely Warrior")
+
+        self.assertEqual(metadata["artist"], "Eason Chan")
+        self.assertEqual(metadata["title"], "孤勇者")
+        self.assertEqual(
+            player.meta["[LoL] Lonely Warrior"]["recognized_identity"]["title"],
+            "孤勇者",
+        )
+        self.assertTrue(player._meta_dirty)
+
+    def test_unicode_lyrics_identity_and_native_artist_aliases_match(self):
+        self.assertEqual(
+            play.Player._normalized_lyrics_identity("《孤勇者》"), "孤勇者"
+        )
+        self.assertEqual(
+            play.Player._genius_title_score("孤勇者", "孤勇者"), 100
+        )
+        self.assertTrue(
+            play.Player._lyrics_artist_matches("陳奕迅 (Eason Chen)", "Eason Chan")
+        )
+
+    def test_genius_accepts_verified_english_translation_for_unicode_title(self):
+        player = play.Player.__new__(play.Player)
+        hit = {"response": {"hits": [{"result": {
+            "title": "陳奕迅 (Eason Chen) - 孤勇者 (Lonely Warrior) (English Translation)",
+            "url": "https://genius.com/lonely-warrior-english",
+            "primary_artist": {"name": "Genius English Translations"},
+            "artist_names": "Genius English Translations",
+        }}]}}
+        page = (
+            '<div data-lyrics-container="true">'
+            '[Verse 1]<br>English translated words</div>'
+        )
+        with (
+            mock.patch.object(player, "_search_genius", return_value=hit),
+            mock.patch.object(player, "_fetch_text", return_value=page),
+        ):
+            result = player._fetch_genius_lyrics({
+                "artist": "Eason Chan", "title": "孤勇者",
+                "prefer_english": True,
+            })
+
+        self.assertEqual(result["source"], "Genius (English translation)")
+        self.assertEqual(result["text"], "[Verse 1]\nEnglish translated words")
 
     def test_cached_shazam_identity_is_not_recognized_again_automatically(self):
         player = play.Player.__new__(play.Player)

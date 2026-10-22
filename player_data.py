@@ -580,7 +580,10 @@ class DataMixin:
     def _normalized_lyrics_identity(value):
         """Normalize song/artist text for provider result matching."""
         value = unicodedata.normalize("NFKD", str(value or "")).casefold()
-        return " ".join(re.findall(r"[a-z0-9]+", value))
+        # ``[a-z0-9]`` erased titles written in Chinese, Japanese, Korean,
+        # Cyrillic, and other scripts. Keep Unicode letters and numbers while
+        # still treating punctuation and underscores as separators.
+        return " ".join(re.findall(r"[^\W_]+", value, re.UNICODE))
 
     @classmethod
     def _lyrics_artist_matches(cls, candidate, known):
@@ -593,10 +596,56 @@ class DataMixin:
         known_normalized = cls._normalized_lyrics_identity(known)
         if candidate_normalized == known_normalized:
             return True
+        padded_candidate = f" {candidate_normalized} "
+        padded_known = f" {known_normalized} "
+        if (
+            len(known_normalized) >= 3 and padded_known in padded_candidate
+        ) or (
+            len(candidate_normalized) >= 3 and padded_candidate in padded_known
+        ):
+            # Providers commonly show a native-script name beside its Latin
+            # alias, for example "陳奕迅 (Eason Chan)".
+            return True
 
-        candidate_parts = set(cls._lyrics_artist_query_parts(candidate))
-        known_parts = set(cls._lyrics_artist_query_parts(known))
-        return bool(candidate_parts & known_parts)
+        def artist_aliases(value):
+            aliases = set()
+            for part in cls._lyrics_artist_query_parts(value):
+                normalized = cls._normalized_lyrics_identity(part)
+                if normalized:
+                    aliases.add(normalized)
+                for bracketed in re.findall(r"[\[(（【]([^\])）】]+)[\])）】]", part):
+                    normalized_alias = cls._normalized_lyrics_identity(bracketed)
+                    if normalized_alias:
+                        aliases.add(normalized_alias)
+                without_alias = re.sub(
+                    r"\s*[\[(（【][^\])）】]+[\])）】]", "", part
+                )
+                normalized_base = cls._normalized_lyrics_identity(without_alias)
+                if normalized_base:
+                    aliases.add(normalized_base)
+            return aliases
+
+        candidate_parts = artist_aliases(candidate)
+        known_parts = artist_aliases(known)
+        if candidate_parts & known_parts:
+            return True
+        for candidate_part in candidate_parts:
+            for known_part in known_parts:
+                shorter, longer = sorted(
+                    (candidate_part, known_part), key=len
+                )
+                if len(shorter) >= 3 and f" {shorter} " in f" {longer} ":
+                    return True
+                # Provider credits occasionally contain a one-character typo
+                # in an otherwise complete alias (Chan/Chen, for example).
+                if (
+                    min(len(candidate_part), len(known_part)) >= 6
+                    and difflib.SequenceMatcher(
+                        None, candidate_part, known_part
+                    ).ratio() >= 0.88
+                ):
+                    return True
+        return False
 
     @classmethod
     def _lyrics_artist_query_parts(cls, artist):
@@ -675,6 +724,9 @@ class DataMixin:
             for wanted in wanted_variants
         ):
             return False
+        raw_credit = re.split(r"\s+[-–—]\s+", candidate, maxsplit=1)[0]
+        if cls._lyrics_artist_matches(raw_credit, known_artist):
+            return True
         artist_parts = {
             cls._normalized_lyrics_identity(part)
             for part in cls._lyrics_artist_query_parts(known_artist)
@@ -890,8 +942,14 @@ class DataMixin:
             and identity.get("strategy") == RECOGNITION_CACHE_STRATEGY
         ):
             recognized_artist = str(identity.get("artist") or "").strip()
-            recognized_title = str(identity.get("title") or "").strip()
+            saved_title = str(identity.get("title") or "").strip()
+            recognized_title = self._clean_recognized_title(saved_title)
             if recognized_artist and recognized_title:
+                if recognized_title != saved_title:
+                    updated_identity = dict(identity)
+                    updated_identity["title"] = recognized_title
+                    entry["recognized_identity"] = updated_identity
+                    self._meta_dirty = True
                 # An audio fingerprint is stronger evidence than a filename
                 # prefix such as [LoL], which may describe a franchise or
                 # playlist rather than an artist.
@@ -1264,6 +1322,16 @@ class DataMixin:
             title,
             flags=re.IGNORECASE,
         )
+        soundtrack_marker = re.compile(
+            r"(?:soundtrack|theme\s+song|opening|ending|title\s+song|"
+            r"主題曲|主题曲|片頭曲|片头曲|片尾曲|插曲|動畫|动画|"
+            r"電視劇|电视剧|電影|电影|遊戲|游戏|主題歌|"
+            r"オープニング|エンディング|주제가|오프닝|엔딩)",
+            re.IGNORECASE,
+        )
+        trailing_note = re.search(r"\s*[\[(（【](.*?)[\])）】]\s*$", title)
+        if trailing_note and soundtrack_marker.search(trailing_note.group(1)):
+            title = title[:trailing_note.start()]
         return " ".join(title.split()).strip(" -")
 
     def _recognize_audio_identity(self, name):

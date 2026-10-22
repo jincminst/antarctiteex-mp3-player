@@ -75,7 +75,11 @@ sidebar. Lyrics are looked up only while that sidebar is open. For an uncached
 song, the player uses a short Shazam audio fingerprint, caches the recognized
 title and artist, then searches Genius and LRCLIB with that identity. Embedded
 lyrics and filename metadata remain fallbacks when Shazam cannot identify a
-recording. Genius's official API returns song metadata and page URLs, not
+recording. Non-Latin titles remain intact during matching, and soundtrack
+annotations from Shazam are removed before lookup. Provider credits may include
+both a native name and a Latin alias; the player compares those aliases as the
+same artist even when providers use a minor spelling variation. Genius's
+official API returns song metadata and page URLs, not
 lyrics text. Set `GENIUS_ACCESS_TOKEN` to a Genius API client access token to
 use its official search endpoint; without a token, the player uses Genius's
 public website search. Successful results are saved in `.mp3cache.json`, so
