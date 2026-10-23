@@ -93,8 +93,8 @@ normal lyrics keep the default text color, italic spans use one accent, and
 bold spans use another. The player does not infer singers from word counts or
 punctuation. Lyrics are censored
 with better-profanity,
-including disguised words such as `s*x`, `s✱x`, and `s*xy`; "hell" and "God"
-stay visible.
+including disguised words that use symbols, homoglyphs, or a space in place of
+a missing letter; "hell" and "God" stay visible.
 The source row becomes a dropdown when Genius has both an original page and a
 verified English translation. Your choice is saved for that MP3, and choosing
 original or English also becomes the default for other songs that offer both.
