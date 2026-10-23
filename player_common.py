@@ -71,33 +71,10 @@ _PROFANITY_HOMOGLYPHS = str.maketrans({
 _HOMOGLYPH_WORD = re.compile(
     r"(?<!\w)[^\W\d_]+(?:['’][^\W\d_]+)?['’]?(?!\w)", re.UNICODE
 )
-_SPACED_MASKED_WORD = re.compile(
-    r"(?<!\w)(?=([^\W\d_]{1,4})[ \t]+([^\W\d_]{1,12})(?!\w))",
-    re.UNICODE,
-)
 
 
 def _censor_lyrics_text(value):
     """Mask profanity, including common lyric spellings with substitute glyphs."""
-    def censor_spaced_masks(text):
-        replacements = []
-        for match in _SPACED_MASKED_WORD.finditer(text):
-            left, right = match.group(1), match.group(2)
-            letters = (left + "*" + right).translate(
-                _PROFANITY_HOMOGLYPHS
-            ).casefold()
-            fixed = len(letters) - 1
-            if fixed < 3 or fixed * 2 < len(letters):
-                continue
-            if any(
-                all(a == "*" or a == b for a, b in zip(letters, word))
-                for word in _MASKED_CENSOR_WORDS.get(len(letters), ())
-            ):
-                replacements.append((match.start(1), match.end(2)))
-        for start, finish in reversed(replacements):
-            text = text[:start] + "****" + text[finish:]
-        return text
-
     def censor_masked(match):
         normalized = match.group().rstrip("'’").translate(_MASKED_LETTERS)
         if profanity.censor(normalized) == "****":
@@ -116,14 +93,19 @@ def _censor_lyrics_text(value):
     def censor_homoglyphs(match):
         original = match.group()
         normalized = original.translate(_PROFANITY_HOMOGLYPHS)
+        lookup = normalized.rstrip("'’").casefold()
+        if lookup in _MASKED_CENSOR_WORDS.get(len(lookup), ()):
+            return "****"
         if normalized != original and profanity.censor(normalized) != normalized:
             return "****"
         return original
 
-    value = censor_spaced_masks(value)
+    # better-profanity can miss an otherwise ordinary word when straight
+    # quotation marks surround a longer phrase. Check each word token against
+    # the same configured dictionary before applying its sentence tokenizer.
+    value = _HOMOGLYPH_WORD.sub(censor_homoglyphs, value)
     value = _MASKED_WORD.sub(censor_masked, value)
     value = _TRAILING_APOSTROPHE_WORD.sub(censor_masked, value)
-    value = _HOMOGLYPH_WORD.sub(censor_homoglyphs, value)
     return profanity.censor(value)
 
 try:

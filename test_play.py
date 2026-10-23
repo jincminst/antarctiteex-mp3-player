@@ -1971,11 +1971,11 @@ class LyricsTests(unittest.TestCase):
             "**** and nevеr; ****, ****",
         )
 
-    def test_lyrics_filter_censors_a_space_used_as_a_missing_letter(self):
-        spaced = hidden_word("fXck", 1, " ")
+    def test_lyrics_filter_censors_plain_profanity_inside_straight_quotes(self):
+        plain = hidden_word("f ck", 1, "u")
         self.assertEqual(
             play._censor_lyrics_text(
-                f'And to that I say "{spaced} it, whatever"; '
+                f'And to that I say "{plain} it, whatever"; '
                 "I say it and go on."
             ),
             'And to that I say "**** it, whatever"; I say it and go on.',
@@ -1990,11 +1990,11 @@ class LyricsTests(unittest.TestCase):
         player.lyrics_text = ""
         player._lyrics_memory_cache = {}
         cached_word = hidden_word("s it", 1, "h")
-        cached_spaced_word = hidden_word("fXck", 1, " ")
+        cached_quoted_word = hidden_word("f ck", 1, "u")
         player.meta = {"Example": {"lyrics_cache": {
             "text": (
                 f"What the hell? This is {cached_word}, s✱x, s*xy, "
-                f"and {cached_spaced_word}."
+                f'and "{cached_quoted_word} it, whatever".'
             ),
             "source": "LRCLIB",
             "cache_version": play.LYRICS_CACHE_VERSION,
@@ -2005,7 +2005,7 @@ class LyricsTests(unittest.TestCase):
 
         self.assertEqual(
             player.lyrics_text,
-            "What the hell? This is ****, ****, ****, and ****.",
+            'What the hell? This is ****, ****, ****, and "**** it, whatever".',
         )
         self.assertEqual(player.meta["Example"]["lyrics_cache"]["text"], player.lyrics_text)
 
