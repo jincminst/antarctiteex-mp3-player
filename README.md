@@ -23,6 +23,8 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Playlist Failure Details with Automatic Pause After Three Consecutive Skips
 - Isolated yt-dlp Extraction That Ignores Conflicting Third-Party Plugins
 - Canonical Video Preview URLs Without Playlist or Tracking Parameters
+- Automatic Title-and-Channel Fallback for Removed Playlist Video IDs
+- Independent pytubefix Audio Fallback When yt-dlp Cannot Produce a Preview
 - YouTube Sorting by Title, Channel, Views, or Likes
 - Apple Music Radio with an Upward-Opening Station Menu (macOS)
 - Play, Pause, Seek, and Volume Controls
@@ -173,6 +175,8 @@ Full YouTube support also needs an external JavaScript runtime. The player
 automatically uses an installed Deno, Node, QuickJS (`qjs`), or Bun executable
 and passes its absolute path to yt-dlp. The package installs yt-dlp's matching
 EJS scripts through the `yt-dlp[default]` dependency group.
+If yt-dlp still cannot produce a preview, the player retries that one item with
+pytubefix's audio-only stream downloader before marking it skipped.
 
 ## Development
 

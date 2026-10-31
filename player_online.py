@@ -1580,7 +1580,6 @@ class OnlineMixin:
                 "confirm you're not a bot",
                 "http error 403",
                 "forbidden",
-                "this video is unavailable",
                 "caller does not have permission",
             )
         )
@@ -1588,6 +1587,63 @@ class OnlineMixin:
     def _yt_dlp_requested_format_unavailable(self, proc):
         err = (proc.stderr or proc.stdout or "").strip()
         return "Requested format is not available" in err
+
+    @staticmethod
+    def _yt_dlp_video_unavailable(proc):
+        output = (
+            getattr(proc, "stderr", "") or getattr(proc, "stdout", "") or ""
+        ).casefold()
+        return "video unavailable" in output
+
+    @staticmethod
+    def _youtube_replacement_query(title, channel=""):
+        """Build an exact search that does not treat a channel hyphen as NOT."""
+        quote = lambda value: str(value or "").replace('"', " ").strip()
+        parts = [f'"{value}"' for value in (quote(title), quote(channel)) if value]
+        return " ".join(parts)
+
+    def _download_pytubefix_preview(
+        self, target, temp_dir, title_hint="", channel_hint=""
+    ):
+        """Download one audio stream through the independent backup extractor."""
+        from pytubefix import Search, YouTube
+
+        if str(target).startswith("ytsearch"):
+            query = str(target).split(":", 1)[-1]
+            wanted_title = self._normalized_lyrics_identity(title_hint)
+            wanted_channel = self._normalized_lyrics_identity(channel_hint)
+            candidates = Search(query).videos[:8]
+            matches = []
+            for candidate in candidates:
+                candidate_title = self._normalized_lyrics_identity(candidate.title)
+                if not wanted_title or candidate_title != wanted_title:
+                    continue
+                candidate_channel = self._normalized_lyrics_identity(candidate.author)
+                channel_match = (
+                    not wanted_channel
+                    or candidate_channel == wanted_channel
+                    or wanted_channel in candidate_channel
+                    or candidate_channel in wanted_channel
+                )
+                if channel_match:
+                    matches.append(candidate)
+            if not matches:
+                raise RuntimeError("no exact title-and-channel replacement found")
+            video = matches[0]
+        else:
+            video = YouTube(str(target))
+        stream = video.streams.filter(only_audio=True).order_by("abr").desc().first()
+        if stream is None:
+            raise RuntimeError("no audio-only stream was offered")
+        path = stream.download(
+            output_path=temp_dir,
+            filename="preview-pytubefix",
+            timeout=20,
+            max_retries=2,
+        )
+        if not path or not os.path.exists(path):
+            raise RuntimeError("download did not produce an audio file")
+        return path
 
     def _without_ytdlp_format(self, cmd):
         fallback = []
@@ -2103,35 +2159,81 @@ class OnlineMixin:
             temp_dir = tempfile.mkdtemp(prefix="play-youtube-")
             outtmpl = os.path.join(temp_dir, "preview.%(ext)s")
             try:
-                base_args = (
-                    "--no-playlist",
-                    "--default-search",
-                    "ytsearch1",
-                    "--no-mtime",
-                    "-N",
-                    YT_DLP_CONCURRENT_FRAGMENTS,
-                    "--print",
-                    "after_move:filepath",
-                    "-o",
-                    outtmpl,
-                    target,
-                )
+                def preview_args(media_target):
+                    return (
+                        "--no-playlist",
+                        "--default-search",
+                        "ytsearch1",
+                        "--no-mtime",
+                        "-N",
+                        YT_DLP_CONCURRENT_FRAGMENTS,
+                        "--print",
+                        "after_move:filepath",
+                        "-o",
+                        outtmpl,
+                        media_target,
+                    )
+
+                def fetch(media_target):
+                    return self._run_ytdlp_capture_with_cookie_retry(
+                        lambda use_cookies: self._yt_dlp_cmd(
+                            "-f",
+                            YT_PREVIEW_FORMAT,
+                            *preview_args(media_target),
+                            use_cookies=use_cookies,
+                        ),
+                        "_youtube_preview_proc",
+                    )
+
                 if request_id != self._youtube_request_id:
                     return
-                proc = self._run_ytdlp_capture_with_cookie_retry(
-                    lambda use_cookies: self._yt_dlp_cmd(
-                        "-f",
-                        YT_PREVIEW_FORMAT,
-                        *base_args,
-                        use_cookies=use_cookies,
-                    ),
-                    "_youtube_preview_proc",
-                )
+                proc = fetch(target)
+                backup_target = target
+                if (
+                    proc.returncode != 0
+                    and self._yt_dlp_video_unavailable(proc)
+                    and title_hint
+                    and request_id == self._youtube_request_id
+                ):
+                    channel_hint = str(
+                        result.get("channel") if isinstance(result, dict) else ""
+                    ).strip()
+                    replacement_query = self._youtube_replacement_query(
+                        title_hint, channel_hint
+                    )
+                    self.status_msg = (
+                        f"Original upload unavailable; finding {title_hint}"
+                    )
+                    self._needs_redraw_hdr = True
+                    self.dirty = True
+                    backup_target = f"ytsearch5:{replacement_query}"
+                    proc = fetch(f"ytsearch1:{replacement_query}")
                 if proc.returncode != 0:
-                    raise RuntimeError(self._yt_dlp_error(proc))
-                paths = [
-                    line.strip() for line in proc.stdout.splitlines() if line.strip()
-                ]
+                    primary_error = self._yt_dlp_error(proc)
+                    self.status_msg = f"yt-dlp failed; trying pytubefix: {title_hint}"
+                    self._needs_redraw_hdr = True
+                    self.dirty = True
+                    try:
+                        backup_path = self._download_pytubefix_preview(
+                            backup_target,
+                            temp_dir,
+                            title_hint=title_hint,
+                            channel_hint=str(
+                                result.get("channel")
+                                if isinstance(result, dict) else ""
+                            ),
+                        )
+                    except Exception as backup_exc:
+                        raise RuntimeError(
+                            f"{primary_error}; pytubefix failed: {backup_exc}"
+                        ) from backup_exc
+                    paths = [backup_path]
+                else:
+                    paths = [
+                        line.strip()
+                        for line in proc.stdout.splitlines()
+                        if line.strip()
+                    ]
                 path = next(
                     (
                         p

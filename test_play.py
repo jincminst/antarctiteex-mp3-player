@@ -1716,6 +1716,53 @@ class PureHelperTests(unittest.TestCase):
             ["yt-dlp", "--quiet", "url"],
         )
 
+    def test_ytdlp_detects_unavailable_video_for_title_fallback(self):
+        player = bare_player()
+        unavailable = mock.Mock(
+            stderr="ERROR: example: Video unavailable", stdout=""
+        )
+        unrelated = mock.Mock(stderr="ERROR: timed out", stdout="")
+
+        self.assertTrue(player._yt_dlp_video_unavailable(unavailable))
+        self.assertFalse(player._yt_dlp_video_unavailable(unrelated))
+        self.assertFalse(player._yt_dlp_needs_cookie_retry(unavailable))
+
+    def test_youtube_replacement_query_quotes_title_and_topic_channel(self):
+        player = bare_player()
+
+        query = player._youtube_replacement_query(
+            "The Bridge", "Arcane - Topic"
+        )
+
+        self.assertEqual(query, '"The Bridge" "Arcane - Topic"')
+
+    def test_pytubefix_fallback_selects_exact_official_result(self):
+        player = bare_player()
+        cover = mock.Mock(title="The Bridge cinematic cover", author="Cover Channel")
+        official = mock.Mock(title="The Bridge", author="Arcane - Topic")
+        stream = mock.Mock()
+        official.streams.filter.return_value.order_by.return_value.desc.return_value.first.return_value = stream
+
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder, "preview-pytubefix.m4a")
+
+            def download(**_kwargs):
+                output.touch()
+                return str(output)
+
+            stream.download.side_effect = download
+            with mock.patch("pytubefix.Search") as search:
+                search.return_value.videos = [cover, official]
+                path = player._download_pytubefix_preview(
+                    'ytsearch5:"The Bridge" "Arcane - Topic"',
+                    folder,
+                    title_hint="The Bridge",
+                    channel_hint="Arcane - Topic",
+                )
+
+        self.assertEqual(path, str(output))
+        stream.download.assert_called_once()
+
     def test_ytdlp_omits_unavailable_browser_impersonation(self):
         player = bare_player()
         listing = mock.Mock(
