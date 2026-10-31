@@ -22,6 +22,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Sequential YouTube Playlist Previews with Automatic Temporary-File Cleanup
 - Playlist Failure Details with Automatic Pause After Three Consecutive Skips
 - Isolated yt-dlp Extraction That Ignores Conflicting Third-Party Plugins
+- Canonical Video Preview URLs Without Playlist or Tracking Parameters
 - YouTube Sorting by Title, Channel, Views, or Likes
 - Apple Music Radio with an Upward-Opening Station Menu (macOS)
 - Play, Pause, Seek, and Volume Controls

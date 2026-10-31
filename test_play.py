@@ -1539,6 +1539,20 @@ class PureHelperTests(unittest.TestCase):
             f"playlist:{playlist_id}",
         )
 
+    def test_youtube_video_target_removes_playlist_context(self):
+        player = bare_player()
+
+        target = player._youtube_video_target({
+            "url": (
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                "&list=PL123&index=7"
+            )
+        })
+
+        self.assertEqual(
+            target, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+
     def test_youtube_playlist_search_uses_playlist_filter(self):
         player = bare_player()
 

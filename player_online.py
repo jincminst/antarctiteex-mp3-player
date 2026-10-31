@@ -669,6 +669,12 @@ class OnlineMixin:
             return ""
         url = result.get("url") or ""
         if isinstance(url, str) and url.startswith("http"):
+            video_id = self._youtube_video_id_from_url(url)
+            if video_id:
+                # Drop playlist, index, tracking, and radio-mix parameters.
+                # A preview needs only the selected video and should not let
+                # YouTube reinterpret it as a playlist request.
+                return f"https://www.youtube.com/watch?v={video_id}"
             return url
         if isinstance(url, str) and url.startswith("ytsearch"):
             return url
