@@ -20,6 +20,7 @@ A terminal interface for playing and organizing a folder of MP3 files.
 - Channel Browsing with Both Video and Playlist Rows
 - YouTube Audio Downloads with Pre-Save Renaming and Live Progress
 - Sequential YouTube Playlist Previews with Automatic Temporary-File Cleanup
+- Playlist Failure Details with Automatic Pause After Three Consecutive Skips
 - YouTube Sorting by Title, Channel, Views, or Likes
 - Apple Music Radio with an Upward-Opening Station Menu (macOS)
 - Play, Pause, Seek, and Volume Controls

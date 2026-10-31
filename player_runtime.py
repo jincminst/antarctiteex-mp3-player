@@ -403,16 +403,15 @@ class RuntimeMixin:
                 self._youtube_loading = False
                 playlist_item = self._youtube_playlist_total > 0
                 if playlist_item:
-                    self._youtube_playlist_failed += 1
-                    self.status_msg = f"Skipped playlist preview: {error}"
+                    continue_playlist = self._record_youtube_playlist_failure(error)
                 else:
                     self.status_msg = f"YouTube preview failed: {error}"
-                self._emit_notification(
-                    self.status_msg, severity="error", timeout=7
-                )
+                    self._emit_notification(
+                        self.status_msg, severity="error", timeout=7
+                    )
                 self._needs_redraw_hdr = True
                 self.dirty = True
-                if playlist_item:
+                if playlist_item and continue_playlist:
                     self._start_next_youtube_playlist_item()
         if self._pending_youtube_search_error is not None:
             request_id, cache_key, error = self._pending_youtube_search_error
@@ -515,6 +514,7 @@ class RuntimeMixin:
                 self._youtube_playlist_total = len(entries)
                 self._youtube_playlist_completed = 0
                 self._youtube_playlist_failed = 0
+                self._youtube_playlist_consecutive_failures = 0
                 self._youtube_playlist_title = title
                 self.status_msg = f"Playlist ready: {len(entries)} songs"
                 self._start_next_youtube_playlist_item()

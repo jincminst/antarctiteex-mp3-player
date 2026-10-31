@@ -232,6 +232,7 @@ class Player(
         self._youtube_playlist_total = 0
         self._youtube_playlist_completed = 0
         self._youtube_playlist_failed = 0
+        self._youtube_playlist_consecutive_failures = 0
         self._youtube_playlist_title = ""
         self._youtube_results_loading = False
         self._youtube_stats_loading = False

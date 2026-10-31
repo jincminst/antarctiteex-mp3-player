@@ -1648,6 +1648,41 @@ class PureHelperTests(unittest.TestCase):
             second, playlist_item=True
         )
 
+    def test_youtube_playlist_pauses_after_three_consecutive_failures(self):
+        player = bare_player()
+        player._youtube_playlist_failed = 2
+        player._youtube_playlist_consecutive_failures = 2
+        player._youtube_active_result = {"title": "Third track"}
+        player._emit_notification = mock.Mock()
+
+        should_continue = player._record_youtube_playlist_failure(
+            "YouTube blocked the media request"
+        )
+
+        self.assertFalse(should_continue)
+        self.assertEqual(player._youtube_playlist_failed, 3)
+        self.assertIn("Playlist paused after 3 skips", player.status_msg)
+        self.assertIn("Third track", player.status_msg)
+        self.assertIn("Press → to continue", player.status_msg)
+
+    def test_youtube_playlist_failure_keeps_reason_before_continuing(self):
+        player = bare_player()
+        player._youtube_playlist_failed = 0
+        player._youtube_playlist_consecutive_failures = 0
+        player._youtube_active_result = {"title": "Unavailable track"}
+        player._emit_notification = mock.Mock()
+
+        should_continue = player._record_youtube_playlist_failure(
+            "This video is private"
+        )
+
+        self.assertTrue(should_continue)
+        self.assertEqual(player._youtube_playlist_failed, 1)
+        self.assertEqual(
+            player.status_msg,
+            "Skipped Unavailable track: This video is private",
+        )
+
     def test_youtube_result_extraction_deduplicates_and_skips_invalid_rows(self):
         player = bare_player()
         entries = [

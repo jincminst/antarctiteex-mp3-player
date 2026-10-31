@@ -198,6 +198,7 @@ UI_REFRESH_MS_INPUT = 1
 TEXTUAL_TICK_S = 1.0
 VOLUME_ENFORCE_S = 1.0
 PLAYBACK_POLL_S = 1.0
+YT_PLAYLIST_MAX_CONSECUTIVE_FAILURES = 3
 DURATION_REDRAW_S = 1.0
 SCREEN_LOCK_POLL_S = 2.0
 # CoreAudio wakes the watcher immediately on a route change. These are only

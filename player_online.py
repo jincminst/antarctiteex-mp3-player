@@ -2170,6 +2170,7 @@ class OnlineMixin:
         self._youtube_playlist_total = 0
         self._youtube_playlist_completed = 0
         self._youtube_playlist_failed = 0
+        self._youtube_playlist_consecutive_failures = 0
         self._youtube_playlist_title = title
         self._youtube_active_result = dict(result)
         self._pending_youtube_playlist_result = None
@@ -2220,6 +2221,31 @@ class OnlineMixin:
         self.status_msg = f"Preparing {position}/{self._youtube_playlist_total}: {title}"
         return self._start_youtube_preview(result, playlist_item=True)
 
+    def _record_youtube_playlist_failure(self, error):
+        """Report one failure and stop a shared error from draining the queue."""
+        self._youtube_playlist_failed += 1
+        self._youtube_playlist_consecutive_failures = (
+            getattr(self, "_youtube_playlist_consecutive_failures", 0) + 1
+        )
+        result = getattr(self, "_youtube_active_result", {})
+        title = str(
+            result.get("title") if isinstance(result, dict) else ""
+        ).strip() or "Untitled"
+        detail = str(error or "unknown preview error").strip()
+        if (
+            self._youtube_playlist_consecutive_failures
+            >= YT_PLAYLIST_MAX_CONSECUTIVE_FAILURES
+        ):
+            self.status_msg = (
+                f"Playlist paused after {self._youtube_playlist_consecutive_failures} "
+                f"skips; {title}: {detail}. Press → to continue"
+            )
+            self._emit_notification(self.status_msg, severity="error", timeout=10)
+            return False
+        self.status_msg = f"Skipped {title}: {detail}"
+        self._emit_notification(self.status_msg, severity="error", timeout=7)
+        return True
+
     def _navigate_youtube_playlist(self, direction):
         """Move within the active temporary YouTube playlist preview."""
         if self._youtube_playlist_total <= 0:
@@ -2238,6 +2264,8 @@ class OnlineMixin:
             self.status_msg = "Already at the last playlist video"
             self.dirty = True
             return False
+
+        self._youtube_playlist_consecutive_failures = 0
 
         # Invalidate an in-flight yt-dlp worker before deleting the current
         # temporary audio. The selected neighboring item then starts through
@@ -2262,6 +2290,7 @@ class OnlineMixin:
         self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
         self._youtube_playlist_loading = False
+        self._youtube_playlist_consecutive_failures = 0
         self._youtube_playlist_title = ""
         self._youtube_active_result = None
         if failed:
@@ -2288,6 +2317,7 @@ class OnlineMixin:
         self._youtube_playlist_queue = deque()
         self._youtube_playlist_history = []
         self._youtube_playlist_total = 0
+        self._youtube_playlist_consecutive_failures = 0
         self._youtube_playlist_title = ""
         self._pending_youtube_playlist_result = None
         self._pending_youtube_playlist_error = None
@@ -2502,6 +2532,7 @@ class OnlineMixin:
                     "or you play another track"
                 )
             self._play_start = time.monotonic()
+            self._youtube_playlist_consecutive_failures = 0
             self._handle_output_device(self._current_output_device)
             self._output_safety_wakeup.set()
         except Exception:
