@@ -1324,7 +1324,11 @@ class OnlineMixin:
         return True
 
     def _yt_dlp_cmd(self, *args, use_cookies=False, use_js_runtime=True):
-        cmd = [YT_DLP_BIN, "--ignore-config"]
+        # Third-party extractors can silently replace yt-dlp's built-in
+        # YouTube extractor. In particular, a stale OAuth plugin makes public
+        # playlist entries report "video unavailable". The player manages its
+        # own cookies and EJS runtime, so use the known built-in extractors.
+        cmd = [YT_DLP_BIN, "--ignore-config", "--no-plugin-dirs"]
         if YT_DLP_IMPERSONATE and self._yt_dlp_impersonation_available():
             cmd.extend(["--impersonate", YT_DLP_IMPERSONATE])
         if use_js_runtime:

@@ -1716,6 +1716,17 @@ class PureHelperTests(unittest.TestCase):
         self.assertNotIn("--impersonate", second)
         run.assert_called_once()
 
+    def test_ytdlp_disables_third_party_extractor_plugins(self):
+        player = bare_player()
+        player._yt_dlp_impersonation_supported = False
+
+        command = player._yt_dlp_cmd(
+            "--no-playlist", "https://www.youtube.com/watch?v=example"
+        )
+
+        self.assertIn("--no-plugin-dirs", command)
+        self.assertLess(command.index("--no-plugin-dirs"), command.index("--no-playlist"))
+
     def test_ytdlp_uses_available_browser_impersonation(self):
         player = bare_player()
         listing = mock.Mock(
